@@ -6,10 +6,16 @@ from datetime import datetime
 import tempfile
 import os
 
+# --- MOTORES EXTERNOS ---
 try:
     from ExtractTable import ExtractTable
 except ImportError:
     ExtractTable = None
+
+try:
+    from fpdf import FPDF
+except ImportError:
+    FPDF = None
 
 # 1. SETUP DA PÁGINA (LIGHT MODE MINIMALISTA)
 st.set_page_config(page_title="JNL Dash Pro", page_icon="🛡️", layout="wide")
@@ -77,7 +83,6 @@ def processar_excel_hibrido(df):
     for i, row in df.iterrows():
         valores_preenchidos = [str(x).strip().upper() for x in row.values if pd.notna(x)]
         linha_txt = " ".join(valores_preenchidos)
-        
         palavras_chave = ['DATA', 'PREVISÃO', 'VALOR', 'A RECEBER', 'RECEBIDO', 'RAZÃO SOCIAL', 'CLIENTE']
         if len(valores_preenchidos) >= 3 and any(k in linha_txt for k in palavras_chave):
             cabecalho = [str(val).strip().upper() if pd.notna(val) and str(val).strip() != "" else f"COL_{idx}" for idx, val in enumerate(row.values)]
@@ -108,12 +113,64 @@ def processar_excel_hibrido(df):
             if pd.notnull(dt): nome_mes = f"{MESES_PT[dt.month]} / {dt.year}"
         
         if len(valores_validos) <= 2 and col_data_idx is not None and pd.isna(valores_linha[col_data_idx]): continue
-        
         if nome_mes is None: nome_mes = "SEM DATA"
         if nome_mes not in blocos: blocos[nome_mes] = []
         blocos[nome_mes].append(valores_linha)
 
     return [(m, pd.DataFrame(d, columns=cabecalho)) for m, d in blocos.items()]
+
+# --- MOTOR DE RELATÓRIO PDF (JNL) ---
+if FPDF is not None:
+    class PDFReport(FPDF):
+        def header(self):
+            self.set_font('Arial', 'B', 10)
+            self.cell(0, 10, 'JNL Dash Pro - Relatorio Analitico', 0, 1, 'C')
+            self.ln(2)
+        def footer(self):
+            self.set_y(-15)
+            self.set_font('Arial', 'I', 8)
+            self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
+
+    def gerar_pdf_tabela(df, titulo):
+        pdf = PDFReport()
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 12)
+        
+        # Limpador de acentos para o PDF não corromper fontes
+        def limpar_texto(t):
+            import unicodedata
+            t = str(t)
+            return unicodedata.normalize('NFKD', t).encode('ASCII', 'ignore').decode('utf-8')
+        
+        pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
+        pdf.ln(5)
+        
+        colunas = list(df.columns)
+        if len(colunas) == 4: widths = [80, 25, 35, 50]
+        else: widths = [100, 45, 45]
+            
+        pdf.set_fill_color(17, 17, 17)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", 'B', 9)
+        
+        for i, col in enumerate(colunas):
+            pdf.cell(widths[i], 8, limpar_texto(col), border=1, fill=True, align='C')
+        pdf.ln()
+        
+        pdf.set_text_color(26, 28, 30)
+        pdf.set_font("Arial", '', 8)
+        
+        for _, row in df.iterrows():
+            for i, item in enumerate(row):
+                texto = limpar_texto(item)
+                limite = int(widths[i] * 0.6) # Evita transbordamento de texto
+                if len(texto) > limite: texto = texto[:limite-3] + "..."
+                pdf.cell(widths[i], 8, texto, border=1)
+            pdf.ln()
+            
+        res = pdf.output(dest='S')
+        if isinstance(res, str): return res.encode('latin-1')
+        return bytes(res)
 
 # --- INTERFACE SIDEBAR ---
 with st.sidebar:
@@ -218,12 +275,9 @@ if arquivos:
                 st.subheader("📅 Filtro de Período")
                 periodo_selecionado = st.date_input("Selecione De / Até:", value=(data_min, data_max), min_value=data_min, max_value=data_max, format="DD/MM/YYYY")
             
-            if isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 2:
-                dt_inicio, dt_fim = periodo_selecionado
-            elif isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 1:
-                dt_inicio = dt_fim = periodo_selecionado[0]
-            else:
-                dt_inicio, dt_fim = data_min, data_max
+            if isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 2: dt_inicio, dt_fim = periodo_selecionado
+            elif isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 1: dt_inicio = dt_fim = periodo_selecionado[0]
+            else: dt_inicio, dt_fim = data_min, data_max
                 
             mask_data = (df_master['DATA'] >= pd.to_datetime(dt_inicio)) & (df_master['DATA'] <= pd.to_datetime(dt_fim))
             df_filtrado = df_master[mask_data]
@@ -242,17 +296,15 @@ if arquivos:
             dados_tabela['DATA'] = dados_tabela['DATA'].dt.strftime('%d/%m/%Y').fillna("-")
             
             if not dados_grafico.empty:
-                # 💡 NOVA DIVISÃO: 4 Cartões de Métricas no topo!
                 m1, m2, m3, m4 = st.columns(4)
-                
                 total_cash = dados_grafico['VALOR'].sum()
                 dias_periodo = (dt_fim - dt_inicio).days + 1
-                total_linhas = len(dados_tabela) # 💡 CONTAGEM DE LINHAS
+                total_linhas = len(dados_tabela)
                 
                 m1.metric("Volume Total (Filtrado)", formatar_contabil(total_cash))
                 m2.metric("Principal Entidade", dados_grafico.iloc[0]['ENTIDADE'])
                 m3.metric("Período Analisado", f"{dias_periodo} Dia(s)")
-                m4.metric("Qtd. Registos", f"{total_linhas} Linha(s)") # 💡 O NOVO CARTÃO
+                m4.metric("Qtd. Registos", f"{total_linhas} Linha(s)")
 
                 aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada"])
 
@@ -261,16 +313,7 @@ if arquivos:
                     st.write("💡 *Exibição do relatório. Use a Câmera no topo do gráfico para salvar a foto.*")
                     
                     dados_completos = dados_grafico.sort_values(by='VALOR', ascending=True)
-                    
-                    dados_barras_formatados = []
-                    for _, row in dados_completos.iterrows():
-                        valor_num = row['VALOR']
-                        str_valor = f"R$ {valor_num:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                        dados_barras_formatados.append({
-                            "value": valor_num,
-                            "label": {"show": True, "position": "right", "formatter": str_valor, "color": "#111111"}
-                        })
-                    
+                    dados_barras_formatados = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
                     altura_dinamica = max(600, len(dados_completos) * 35)
                     
                     bar_options = {
@@ -288,26 +331,38 @@ if arquivos:
                 with aba_tab:
                     col_t1, col_t2 = st.columns([3, 1])
                     with col_t1:
-                        st.write("💡 *A tabela lista cada vencimento separadamente. Use a Câmera acima da tabela para salvar.*")
+                        st.write("💡 *A tabela visualiza apenas a primeira página. Para impressão completa, baixe o PDF abaixo.*")
                     with col_t2:
                         mostrar_situacao = st.toggle("Mostrar Coluna 'Situação'", value=True)
 
                     tabela_final = dados_tabela.copy()
-                    tabela_final['VALOR'] = tabela_final['VALOR'].apply(formatar_contabil)
+                    tabela_final['VALOR_STR'] = tabela_final['VALOR'].apply(formatar_contabil)
                     
+                    # 💡 MOTOR DE PDF (Montando a estrutura que vai pro papel)
                     if mostrar_situacao:
+                        df_pdf = pd.DataFrame({"RAZAO SOCIAL / DESCRICAO": tabela_final['ENTIDADE'], "DATA": tabela_final['DATA'], "VALOR": tabela_final['VALOR_STR'], "SITUACAO": tabela_final['STATUS']})
                         cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>", "<b>SITUAÇÃO</b>"]
-                        celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR'], tabela_final['STATUS']]
+                        celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR_STR'], tabela_final['STATUS']]
                     else:
+                        df_pdf = pd.DataFrame({"RAZAO SOCIAL / DESCRICAO": tabela_final['ENTIDADE'], "DATA": tabela_final['DATA'], "VALOR": tabela_final['VALOR_STR']})
                         cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>"]
-                        celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR']]
+                        celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR_STR']]
 
+                    # 💡 BOTÃO DE DOWNLOAD OFICIAL DO PDF
+                    if FPDF is not None:
+                        pdf_bytes = gerar_pdf_tabela(df_pdf, titulo_customizado)
+                        st.download_button(label="📄 Baixar Relatório em PDF (Todas as Linhas)", data=pdf_bytes, file_name=f"Relatorio_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True)
+                    else:
+                        st.error("⚠️ Biblioteca 'fpdf' não instalada. Atualize o requirements.txt.")
+
+                    # 💡 TABELA VISUAL (Apenas a parte superior pro sistema não travar)
                     fig_table = go.Figure(data=[go.Table(
                         header=dict(values=cabecalhos, fill_color='#111111', align='left', font=dict(color='white', size=13)),
                         cells=dict(values=celulas, fill_color='#F8F9FB', align='left', font=dict(color='#1A1C1E', size=12), height=30))
                     ])
                     fig_table.update_layout(margin=dict(l=0, r=0, b=0, t=0), height=500, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                     st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
+                    
             else: st.info("Todos os valores encontrados estão zerados no período selecionado.")
         else: st.warning("⚠️ Nenhuma data válida encontrada no arquivo. Verifique a coluna de datas.")
 else: st.info("Aguardando o envio da planilha (Pagar ou Receber)...")
