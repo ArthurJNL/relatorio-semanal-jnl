@@ -242,13 +242,17 @@ if arquivos:
             dados_tabela['DATA'] = dados_tabela['DATA'].dt.strftime('%d/%m/%Y').fillna("-")
             
             if not dados_grafico.empty:
-                m1, m2, m3 = st.columns(3)
+                # 💡 NOVA DIVISÃO: 4 Cartões de Métricas no topo!
+                m1, m2, m3, m4 = st.columns(4)
+                
                 total_cash = dados_grafico['VALOR'].sum()
                 dias_periodo = (dt_fim - dt_inicio).days + 1
+                total_linhas = len(dados_tabela) # 💡 CONTAGEM DE LINHAS
                 
                 m1.metric("Volume Total (Filtrado)", formatar_contabil(total_cash))
                 m2.metric("Principal Entidade", dados_grafico.iloc[0]['ENTIDADE'])
                 m3.metric("Período Analisado", f"{dias_periodo} Dia(s)")
+                m4.metric("Qtd. Registos", f"{total_linhas} Linha(s)") # 💡 O NOVO CARTÃO
 
                 aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada"])
 
@@ -282,7 +286,6 @@ if arquivos:
                     st_echarts(options=bar_options, height=f"{altura_dinamica}px")
 
                 with aba_tab:
-                    # 💡 O NOVO INTERRUPTOR DE COLUNA
                     col_t1, col_t2 = st.columns([3, 1])
                     with col_t1:
                         st.write("💡 *A tabela lista cada vencimento separadamente. Use a Câmera acima da tabela para salvar.*")
@@ -292,7 +295,6 @@ if arquivos:
                     tabela_final = dados_tabela.copy()
                     tabela_final['VALOR'] = tabela_final['VALOR'].apply(formatar_contabil)
                     
-                    # Motor inteligente que monta a tabela baseado no botão
                     if mostrar_situacao:
                         cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>", "<b>SITUAÇÃO</b>"]
                         celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR'], tabela_final['STATUS']]
