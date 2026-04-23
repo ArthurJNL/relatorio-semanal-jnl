@@ -154,11 +154,20 @@ if FPDF is not None:
         pdf.set_font("Arial", '', 8)
         
         for _, row in df.iterrows():
+            # Destacar linha de total no PDF
+            if "TOTAL" in str(row.iloc[0]):
+                pdf.set_font("Arial", 'B', 9)
+                pdf.set_fill_color(230, 230, 230)
+                fill_row = True
+            else:
+                pdf.set_font("Arial", '', 8)
+                fill_row = False
+                
             for i, item in enumerate(row):
                 texto = limpar_texto(item)
                 limite = int(widths[i] * 0.6)
                 if len(texto) > limite: texto = texto[:limite-3] + "..."
-                pdf.cell(widths[i], 8, texto, border=1)
+                pdf.cell(widths[i], 8, texto, border=1, fill=fill_row)
             pdf.ln()
             
         res = pdf.output(dest='S')
@@ -374,27 +383,54 @@ if arquivos:
                     tabela_final = dados_tabela.copy()
                     tabela_final['VALOR_STR'] = tabela_final['VALOR'].apply(formatar_contabil)
                     
+                    # 💡 MOTOR DE SOMA E MONTAGEM DA LINHA DE TOTAL
+                    soma_total = tabela_final['VALOR'].sum()
+                    soma_total_str = formatar_contabil(soma_total)
+                    
+                    lista_entidades = tabela_final['ENTIDADE'].tolist() + ["TOTAL GERAL"]
+                    lista_datas = tabela_final['DATA'].tolist() + ["-"]
+                    lista_valores = tabela_final['VALOR_STR'].tolist() + [soma_total_str]
+                    lista_status = tabela_final['STATUS'].tolist() + ["-"]
+
+                    # Listas com código HTML Bold para a visualização na tela
+                    lista_entidades_visual = tabela_final['ENTIDADE'].tolist() + ["<b>TOTAL GERAL</b>"]
+                    lista_datas_visual = tabela_final['DATA'].tolist() + ["<b>-</b>"]
+                    lista_valores_visual = tabela_final['VALOR_STR'].tolist() + [f"<b>{soma_total_str}</b>"]
+                    lista_status_visual = tabela_final['STATUS'].tolist() + ["<b>-</b>"]
+                    
                     if mostrar_situacao:
-                        df_pdf = pd.DataFrame({"RAZAO SOCIAL / DESCRICAO": tabela_final['ENTIDADE'], "DATA": tabela_final['DATA'], "VALOR": tabela_final['VALOR_STR'], "SITUACAO": tabela_final['STATUS']})
+                        df_pdf = pd.DataFrame({"RAZAO SOCIAL / DESCRICAO": lista_entidades, "DATA": lista_datas, "VALOR": lista_valores, "SITUACAO": lista_status})
                         cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>", "<b>SITUAÇÃO</b>"]
-                        celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR_STR'], tabela_final['STATUS']]
+                        celulas = [lista_entidades_visual, lista_datas_visual, lista_valores_visual, lista_status_visual]
                         larguras_colunas = [350, 100, 120, 120]
                     else:
-                        df_pdf = pd.DataFrame({"RAZAO SOCIAL / DESCRICAO": tabela_final['ENTIDADE'], "DATA": tabela_final['DATA'], "VALOR": tabela_final['VALOR_STR']})
+                        df_pdf = pd.DataFrame({"RAZAO SOCIAL / DESCRICAO": lista_entidades, "DATA": lista_datas, "VALOR": lista_valores})
                         cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>"]
-                        celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR_STR']]
+                        celulas = [lista_entidades_visual, lista_datas_visual, lista_valores_visual]
                         larguras_colunas = [350, 120, 120]
 
                     if FPDF is not None:
                         pdf_bytes = gerar_pdf_tabela(df_pdf, titulo_tabela)
-                        st.download_button(label="📄 Baixar Tabela em PDF (Todas as Linhas)", data=pdf_bytes, file_name=f"Detalhado_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True)
+                        st.download_button(label="📄 Baixar Tabela em PDF (Com Total)", data=pdf_bytes, file_name=f"Detalhado_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True)
                     else:
                         st.error("⚠️ Biblioteca 'fpdf' não instalada. Atualize o ficheiro requirements.txt.")
+
+                    # 💡 LÓGICA DE CORES PARA DESTACAR A ÚLTIMA LINHA (TOTAL)
+                    cor_linhas_normais = '#F8F9FB'
+                    cor_linha_total = '#D0D5DD' # Cinza mais destacado para o Total
+                    cores_tabela = [cor_linhas_normais] * len(tabela_final) + [cor_linha_total]
+                    array_cores_fundo = [cores_tabela] * len(cabecalhos)
 
                     fig_table = go.Figure(data=[go.Table(
                         columnwidth=larguras_colunas,
                         header=dict(values=cabecalhos, fill_color='#111111', align='left', font=dict(color='white', size=13)),
-                        cells=dict(values=celulas, fill_color='#F8F9FB', align='left', font=dict(color='#1A1C1E', size=12), height=45)
+                        cells=dict(
+                            values=celulas, 
+                            fill_color=array_cores_fundo, # Aplica o cinza no fundo da última linha
+                            align='left', 
+                            font=dict(color='#1A1C1E', size=12), 
+                            height=45
+                        )
                     )])
                     
                     fig_table.update_layout(
