@@ -75,7 +75,6 @@ def calcular_status_vencimento(data_alvo):
     if pd.isnull(data_alvo) or str(data_alvo).strip() == "-":
         return "-"
     
-    # Tratamento caso a data venha como string do pandas
     if isinstance(data_alvo, str):
         try:
             data_alvo = pd.to_datetime(data_alvo, format='%d/%m/%Y')
@@ -154,145 +153,175 @@ with st.sidebar:
     st.markdown("---")
     arquivos = st.file_uploader("Suba as planilhas (Pagar/Receber)", type=["xlsx", "xls"], accept_multiple_files=True)
     st.markdown("---")
-    st.subheader("📅 Filtro de Meses")
 
 # --- LÓGICA PRINCIPAL ---
 if arquivos:
     todos_os_blocos = []
-    meses_disponiveis = []
-
+    
+    # 1. Lê todos os arquivos
     for arq in arquivos:
         df_bruto = pd.read_excel(arq, header=None)
         resultados = processar_excel_hibrido(df_bruto)
         for nome_mes, dados in resultados:
             todos_os_blocos.append((nome_mes, dados))
-            if nome_mes not in meses_disponiveis:
-                meses_disponiveis.append(nome_mes)
 
-    if meses_disponiveis:
-        with st.sidebar:
-            escolha_meses = st.multiselect("Filtrar meses:", options=sorted(meses_disponiveis), default=meses_disponiveis)
-    
-    st.markdown("# Painel Estratégico JNL")
-    comando_filtro = st.text_input("💬 Buscar por Razão Social ou Descrição...", placeholder="Ex: IMPORPECAS, KS MAQUINAS...")
-
-    resumos_finais = []
+    # 2. Reúne e limpa todos os dados primeiro para encontrar as datas reais
+    resumos_limpos = []
     for mes, df_mes in todos_os_blocos:
-        if mes in escolha_meses:
-            col_v = next((c for c in df_mes.columns if any(k in c for k in ['VALOR', 'A RECEBER'])), None)
-            col_data = next((c for c in df_mes.columns if any(k in c for k in ['DATA', 'PREVISÃO'])), None)
+        col_v = next((c for c in df_mes.columns if any(k in c for k in ['VALOR', 'A RECEBER'])), None)
+        col_data = next((c for c in df_mes.columns if any(k in c for k in ['DATA', 'PREVISÃO'])), None)
+        
+        prioridades_nome = ['RAZÃO SOCIAL', 'DESCRIÇÃO', 'FORNECEDOR', 'DEVEDOR']
+        col_d = None
+        for p in prioridades_nome:
+            match = next((c for c in df_mes.columns if p in c), None)
+            if match:
+                col_d = match
+                break
+        
+        if not col_d:
+            col_d = df_mes.columns[1] if len(df_mes.columns) > 1 else df_mes.columns[0]
+        
+        if col_v and col_d and col_data:
+            df_tmp = df_mes.copy()
+            df_tmp[col_v] = df_tmp[col_v].apply(extrair_valor)
+            df_tmp[col_data] = pd.to_datetime(df_tmp[col_data], errors='coerce').dt.normalize()
             
-            prioridades_nome = ['RAZÃO SOCIAL', 'DESCRIÇÃO', 'FORNECEDOR', 'DEVEDOR']
-            col_d = None
-            for p in prioridades_nome:
-                match = next((c for c in df_mes.columns if p in c), None)
-                if match:
-                    col_d = match
-                    break
+            df_tmp[col_d] = df_tmp[col_d].astype(str).str.upper().str.strip()
+            df_tmp[col_d] = df_tmp[col_d].replace(r'\s+', ' ', regex=True)
             
-            if not col_d:
-                col_d = df_mes.columns[1] if len(df_mes.columns) > 1 else df_mes.columns[0]
+            df_tmp = df_tmp[df_tmp[col_d] != ""]
+            df_tmp = df_tmp[df_tmp[col_d] != "NAN"]
+            df_tmp = df_tmp[df_tmp[col_d] != "NONE"]
             
-            if col_v and col_d and col_data:
-                # Tratamento de Valor e Data
-                df_mes[col_v] = df_mes[col_v].apply(extrair_valor)
-                df_mes[col_data] = pd.to_datetime(df_mes[col_data], errors='coerce').dt.normalize()
-                
-                # Tratamento de Nomes (Limpeza)
-                df_mes[col_d] = df_mes[col_d].astype(str).str.upper().str.strip()
-                df_mes[col_d] = df_mes[col_d].replace(r'\s+', ' ', regex=True)
-                
-                df_mes = df_mes[df_mes[col_d] != ""]
-                df_mes = df_mes[df_mes[col_d] != "NAN"]
-                df_mes = df_mes[df_mes[col_d] != "NONE"]
-                
-                if comando_filtro:
-                    df_mes = df_mes[df_mes[col_d].str.contains(comando_filtro.strip().upper(), case=False, na=False)]
-                
-                # Salva o bloco mantendo a coluna de DATA
-                resumos_finais.append(df_mes[[col_d, col_data, col_v]])
+            # Padroniza as colunas para facilitar
+            df_tmp = df_tmp.rename(columns={col_d: 'ENTIDADE', col_data: 'DATA', col_v: 'VALOR'})
+            resumos_limpos.append(df_tmp[['ENTIDADE', 'DATA', 'VALOR']])
 
-    if resumos_finais:
-        df_total = pd.concat(resumos_finais)
-        n_cat = df_total.columns[0]
-        n_data = df_total.columns[1]
-        n_val = df_total.columns[2]
+    if resumos_limpos:
+        df_master = pd.concat(resumos_limpos)
+        df_master = df_master.dropna(subset=['DATA']) # Remove linhas sem data válida
         
-        # --- CÉREBRO 1: O GRÁFICO (Agrupa apenas por nome da Empresa) ---
-        dados_grafico = df_total.groupby(n_cat)[n_val].sum().reset_index().sort_values(by=n_val, ascending=False)
-        dados_grafico = dados_grafico[dados_grafico[n_val] > 0]
-        
-        # --- CÉREBRO 2: A TABELA DETALHADA (Agrupa por Empresa + Data) ---
-        dados_tabela = df_total.groupby([n_cat, n_data])[n_val].sum().reset_index().sort_values(by=n_data, ascending=True)
-        dados_tabela = dados_tabela[dados_tabela[n_val] > 0]
-        
-        # Formata a data e calcula Status
-        dados_tabela['STATUS'] = dados_tabela[n_data].apply(calcular_status_vencimento)
-        dados_tabela[n_data] = dados_tabela[n_data].dt.strftime('%d/%m/%Y').fillna("-")
-        
-        if not dados_grafico.empty:
-            m1, m2, m3 = st.columns(3)
-            total_cash = dados_grafico[n_val].sum()
-            m1.metric("Volume Total (Filtrado)", formatar_contabil(total_cash))
-            m2.metric("Principal Entidade", dados_grafico.iloc[0][n_cat])
-            m3.metric("Filtro Ativo", f"{len(escolha_meses)} Mês(es)")
-
-            aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada (Com Vencimentos)"])
-
-            with aba_visu:
-                st.write("💡 *Exibindo o Top 15 maiores. Use a Câmera no topo do gráfico para salvar a foto.*")
-                top_15 = dados_grafico.head(15).sort_values(by=n_val, ascending=True)
-                
-                bar_options = {
-                    "backgroundColor": "transparent",
-                    "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2}}},
-                    "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                    "grid": {"left": "1%", "right": "12%", "bottom": "1%", "containLabel": True},
-                    "xAxis": {
-                        "type": "value", 
-                        "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}
-                    },
-                    "yAxis": {
-                        "type": "category",
-                        "data": top_15[n_cat].tolist(),
-                        "axisLabel": {"interval": 0, "width": 200, "overflow": "truncate", "color": "#1A1C1E"}
-                    },
-                    "series": [{
-                        "type": "bar",
-                        "data": top_15[n_val].tolist(),
-                        "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}, # GRÁFICO PRETO
-                        "label": {"show": True, "position": "right", "formatter": "R$ {c}", "color": "#111111"}
-                    }]
-                }
-                st_echarts(options=bar_options, height="600px")
-
-            with aba_tab:
-                st.write("💡 *A tabela lista cada vencimento separadamente. Use a Câmera acima da tabela para salvar.*")
-                tabela_final = dados_tabela.copy()
-                tabela_final[n_val] = tabela_final[n_val].apply(formatar_contabil)
-                
-                # Montando a Tabela Plotly Light Mode + Black Accent (Ordem: Nome | Data | Valor | Status)
-                fig_table = go.Figure(data=[go.Table(
-                    header=dict(
-                        values=[f"<b>{n_cat}</b>", f"<b>{n_data}</b>", f"<b>{n_val}</b>", "<b>SITUAÇÃO</b>"], 
-                        fill_color='#111111', align='left', font=dict(color='white', size=13) # CABEÇALHO PRETO
-                    ),
-                    cells=dict(
-                        values=[tabela_final[n_cat], tabela_final[n_data], tabela_final[n_val], tabela_final['STATUS']], 
-                        fill_color='#F8F9FB', align='left', font=dict(color='#1A1C1E', size=12),
-                        height=30
-                    ))
-                ])
-                fig_table.update_layout(
-                    margin=dict(l=0, r=0, b=0, t=0), 
-                    height=500,
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    plot_bgcolor='rgba(0,0,0,0)'
+        if not df_master.empty:
+            # Encontra a menor e maior data da planilha toda
+            data_min = df_master['DATA'].min().date()
+            data_max = df_master['DATA'].max().date()
+            
+            with st.sidebar:
+                st.subheader("📅 Filtro de Período")
+                periodo_selecionado = st.date_input(
+                    "Selecione De / Até:",
+                    value=(data_min, data_max),
+                    min_value=data_min,
+                    max_value=data_max,
+                    format="DD/MM/YYYY"
                 )
-                st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
+            
+            # Validação do período (Tratamento se o usuário clicar apenas em uma data)
+            if isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 2:
+                dt_inicio, dt_fim = periodo_selecionado
+            elif isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 1:
+                dt_inicio = dt_fim = periodo_selecionado[0]
+            else:
+                dt_inicio, dt_fim = data_min, data_max
+                
+            # Filtra o Master DataFrame usando as datas escolhidas
+            mask_data = (df_master['DATA'] >= pd.to_datetime(dt_inicio)) & (df_master['DATA'] <= pd.to_datetime(dt_fim))
+            df_filtrado = df_master[mask_data]
+
+            st.markdown("# Painel Estratégico JNL")
+            comando_filtro = st.text_input("💬 Buscar por Razão Social ou Descrição...", placeholder="Ex: IMPORPECAS, KS MAQUINAS...")
+            
+            if comando_filtro:
+                df_filtrado = df_filtrado[df_filtrado['ENTIDADE'].str.contains(comando_filtro.strip().upper(), case=False, na=False)]
+
+            # --- CÉREBROS DE AGRUPAMENTO ---
+            dados_grafico = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
+            dados_grafico = dados_grafico[dados_grafico['VALOR'] > 0]
+            
+            dados_tabela = df_filtrado.groupby(['ENTIDADE', 'DATA'])['VALOR'].sum().reset_index().sort_values(by='DATA', ascending=True)
+            dados_tabela = dados_tabela[dados_tabela['VALOR'] > 0]
+            
+            dados_tabela['STATUS'] = dados_tabela['DATA'].apply(calcular_status_vencimento)
+            dados_tabela['DATA'] = dados_tabela['DATA'].dt.strftime('%d/%m/%Y').fillna("-")
+            
+            if not dados_grafico.empty:
+                m1, m2, m3 = st.columns(3)
+                total_cash = dados_grafico['VALOR'].sum()
+                dias_periodo = (dt_fim - dt_inicio).days + 1
+                
+                m1.metric("Volume Total (Filtrado)", formatar_contabil(total_cash))
+                m2.metric("Principal Entidade", dados_grafico.iloc[0]['ENTIDADE'])
+                m3.metric("Período Analisado", f"{dias_periodo} Dia(s)")
+
+                aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada (Com Vencimentos)"])
+
+                with aba_visu:
+                    # CAMPO DO TÍTULO PERSONALIZÁVEL
+                    titulo_customizado = st.text_input(
+                        "📝 Título Customizado do Gráfico (Aparecerá na foto baixada):", 
+                        value=f"Ranking de Valores ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})"
+                    )
+                    
+                    st.write("💡 *Exibindo o Top 15 maiores. Use a Câmera no topo do gráfico para salvar a foto.*")
+                    top_15 = dados_grafico.head(15).sort_values(by='VALOR', ascending=True)
+                    
+                    bar_options = {
+                        "backgroundColor": "transparent",
+                        # INJEÇÃO DO TÍTULO NO GRÁFICO
+                        "title": {
+                            "text": titulo_customizado,
+                            "left": "center",
+                            "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Inter"}
+                        },
+                        "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2}}},
+                        "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                        # O top "15%" dá um espaço para o título respirar antes das barras
+                        "grid": {"top": "15%", "left": "1%", "right": "12%", "bottom": "1%", "containLabel": True},
+                        "xAxis": {
+                            "type": "value", 
+                            "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}
+                        },
+                        "yAxis": {
+                            "type": "category",
+                            "data": top_15['ENTIDADE'].tolist(),
+                            "axisLabel": {"interval": 0, "width": 200, "overflow": "truncate", "color": "#1A1C1E"}
+                        },
+                        "series": [{
+                            "type": "bar",
+                            "data": top_15['VALOR'].tolist(),
+                            "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}, 
+                            "label": {"show": True, "position": "right", "formatter": "R$ {c}", "color": "#111111"}
+                        }]
+                    }
+                    st_echarts(options=bar_options, height="600px")
+
+                with aba_tab:
+                    st.write("💡 *A tabela lista cada vencimento separadamente. Use a Câmera acima da tabela para salvar.*")
+                    tabela_final = dados_tabela.copy()
+                    tabela_final['VALOR'] = tabela_final['VALOR'].apply(formatar_contabil)
+                    
+                    fig_table = go.Figure(data=[go.Table(
+                        header=dict(
+                            values=["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>", "<b>SITUAÇÃO</b>"], 
+                            fill_color='#111111', align='left', font=dict(color='white', size=13) 
+                        ),
+                        cells=dict(
+                            values=[tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR'], tabela_final['STATUS']], 
+                            fill_color='#F8F9FB', align='left', font=dict(color='#1A1C1E', size=12),
+                            height=30
+                        ))
+                    ])
+                    fig_table.update_layout(
+                        margin=dict(l=0, r=0, b=0, t=0), 
+                        height=500,
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        plot_bgcolor='rgba(0,0,0,0)'
+                    )
+                    st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
+            else:
+                st.info("Todos os valores encontrados estão zerados no período selecionado.")
         else:
-            st.info("Todos os valores encontrados estão zerados para os meses selecionados.")
-    else:
-        st.warning("⚠️ O sistema não encontrou dados válidos. Verifique se o arquivo tem Data, Razão Social e Valor.")
+            st.warning("⚠️ Nenhuma data válida encontrada no arquivo. Verifique a coluna de datas.")
 else:
     st.info("Aguardando o envio da planilha (Pagar ou Receber)...")
