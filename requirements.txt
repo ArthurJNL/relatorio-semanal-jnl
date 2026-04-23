@@ -1,4 +1,6 @@
 streamlit
 pandas
 streamlit-echarts
+plotly
 openpyxl
+ExtractTable
