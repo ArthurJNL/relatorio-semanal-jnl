@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import tempfile
 import os
+import math
 
 # --- MOTORES EXTERNOS ---
 try:
@@ -119,7 +120,7 @@ def processar_excel_hibrido(df):
 
     return [(m, pd.DataFrame(d, columns=cabecalho)) for m, d in blocos.items()]
 
-# --- MOTORES DE RELATÓRIO PDF (JNL) ---
+# --- MOTORES DE RELATÓRIO PDF DINÂMICO (JNL) ---
 def limpar_texto(t):
     import unicodedata
     return unicodedata.normalize('NFKD', str(t)).encode('ASCII', 'ignore').decode('utf-8')
@@ -150,25 +151,66 @@ if FPDF is not None:
             pdf.cell(widths[i], 8, limpar_texto(col), border=1, fill=True, align='C')
         pdf.ln()
         
-        pdf.set_text_color(26, 28, 30)
-        pdf.set_font("Arial", '', 8)
+        line_height = 5
         
         for _, row in df.iterrows():
-            # Destacar linha de total no PDF
-            if "TOTAL" in str(row.iloc[0]):
+            is_total = "TOTAL" in str(row.iloc[0])
+            if is_total:
                 pdf.set_font("Arial", 'B', 9)
                 pdf.set_fill_color(230, 230, 230)
-                fill_row = True
+                pdf.set_text_color(17, 17, 17)
             else:
                 pdf.set_font("Arial", '', 8)
-                fill_row = False
+                pdf.set_fill_color(255, 255, 255)
+                pdf.set_text_color(26, 28, 30)
                 
+            # Calcular a altura dinâmica necessária para quebrar linhas sem cortar
+            max_linhas = 1
             for i, item in enumerate(row):
                 texto = limpar_texto(item)
-                limite = int(widths[i] * 0.6)
-                if len(texto) > limite: texto = texto[:limite-3] + "..."
-                pdf.cell(widths[i], 8, texto, border=1, fill=fill_row)
-            pdf.ln()
+                w_util = widths[i] - 2
+                w_texto = pdf.get_string_width(texto)
+                linhas = math.ceil(w_texto / w_util) if w_util > 0 else 1
+                if linhas > max_linhas:
+                    max_linhas = linhas
+                    
+            h_linha = (max_linhas * line_height) + 2
+            
+            # Quebra de página automática
+            if pdf.get_y() + h_linha > 275:
+                pdf.add_page()
+                pdf.set_fill_color(17, 17, 17)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_font("Arial", 'B', 9)
+                for i, col in enumerate(colunas):
+                    pdf.cell(widths[i], 8, limpar_texto(col), border=1, fill=True, align='C')
+                pdf.ln()
+                if is_total:
+                    pdf.set_font("Arial", 'B', 9)
+                    pdf.set_fill_color(230, 230, 230)
+                    pdf.set_text_color(17, 17, 17)
+                else:
+                    pdf.set_font("Arial", '', 8)
+                    pdf.set_fill_color(255, 255, 255)
+                    pdf.set_text_color(26, 28, 30)
+                    
+            start_x = pdf.get_x()
+            start_y = pdf.get_y()
+            
+            for i, item in enumerate(row):
+                texto = limpar_texto(item)
+                w = widths[i]
+                x = start_x + sum(widths[:i])
+                y = start_y
+                
+                style = 'DF' if is_total else 'D'
+                pdf.rect(x, y, w, h_linha, style)
+                pdf.set_xy(x, y + 1)
+                
+                align = 'L' if i == 0 else ('R' if "VALOR" in colunas[i].upper() else 'C')
+                pdf.multi_cell(w, line_height, texto, border=0, align=align)
+                
+            pdf.set_xy(start_x, start_y + h_linha)
             
         res = pdf.output(dest='S')
         if isinstance(res, str): return res.encode('latin-1')
@@ -184,25 +226,60 @@ if FPDF is not None:
         pdf.set_fill_color(17, 17, 17)
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Arial", 'B', 9)
-        pdf.cell(20, 8, "POS.", border=1, fill=True, align='C')
-        pdf.cell(120, 8, "RAZAO SOCIAL / DESCRICAO", border=1, fill=True, align='C')
-        pdf.cell(50, 8, "VALOR TOTAL", border=1, fill=True, align='C')
+        widths = [20, 120, 50]
+        colunas = ["POS.", "RAZAO SOCIAL / DESCRICAO", "VALOR TOTAL"]
+        for i, col in enumerate(colunas):
+            pdf.cell(widths[i], 8, col, border=1, fill=True, align='C')
         pdf.ln()
         
         pdf.set_text_color(26, 28, 30)
         pdf.set_font("Arial", '', 8)
-        
+        line_height = 5
         df_ord = df.sort_values(by='VALOR', ascending=False).reset_index(drop=True)
+        
         for i, row in df_ord.iterrows():
             pos = f"{i + 1}."
-            nome = limpar_texto(row['ENTIDADE'])
-            if len(nome) > 65: nome = nome[:62] + "..."
+            nome = limpar_texto(row['ENTIDADE']) # O Limite de 65 caracteres foi completamente removido!
             valor = f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            linha_dados = [pos, nome, valor]
             
-            pdf.cell(20, 8, pos, border=1, align='C')
-            pdf.cell(120, 8, nome, border=1)
-            pdf.cell(50, 8, valor, border=1, align='R')
-            pdf.ln()
+            # Cálculo de altura estendida para o ranking também
+            max_linhas = 1
+            for j, item in enumerate(linha_dados):
+                w_util = widths[j] - 2
+                w_texto = pdf.get_string_width(item)
+                linhas = math.ceil(w_texto / w_util) if w_util > 0 else 1
+                if linhas > max_linhas:
+                    max_linhas = linhas
+                    
+            h_linha = (max_linhas * line_height) + 2
+            
+            if pdf.get_y() + h_linha > 275:
+                pdf.add_page()
+                pdf.set_fill_color(17, 17, 17)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_font("Arial", 'B', 9)
+                for j, col in enumerate(colunas):
+                    pdf.cell(widths[j], 8, col, border=1, fill=True, align='C')
+                pdf.ln()
+                pdf.set_text_color(26, 28, 30)
+                pdf.set_font("Arial", '', 8)
+                
+            start_x = pdf.get_x()
+            start_y = pdf.get_y()
+            
+            for j, item in enumerate(linha_dados):
+                w = widths[j]
+                x = start_x + sum(widths[:j])
+                y = start_y
+                
+                pdf.rect(x, y, w, h_linha, 'D')
+                pdf.set_xy(x, y + 1)
+                
+                align = 'C' if j == 0 else ('L' if j == 1 else 'R')
+                pdf.multi_cell(w, line_height, item, border=0, align=align)
+                
+            pdf.set_xy(start_x, start_y + h_linha)
             
         res = pdf.output(dest='S')
         if isinstance(res, str): return res.encode('latin-1')
@@ -349,7 +426,7 @@ if arquivos:
                     
                     col_g1, col_g2 = st.columns([3, 1])
                     with col_g1:
-                        st.write("💡 *Use a Câmera no topo do gráfico para salvar a foto (PNG) da ecrã.*")
+                        st.write("💡 *O Gráfico agora quebra nomes longos em várias linhas. Use a Câmera para PNG ou o Botão para PDF.*")
                     with col_g2:
                         if FPDF is not None:
                             pdf_ranking_bytes = gerar_pdf_ranking(dados_grafico, titulo_customizado_grafico)
@@ -357,7 +434,9 @@ if arquivos:
                     
                     dados_completos = dados_grafico.sort_values(by='VALOR', ascending=True)
                     dados_barras_formatados = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
-                    altura_dinamica = max(600, len(dados_completos) * 35)
+                    
+                    # 💡 AUMENTADO: Mais espaço por empresa para caber os textos gigantes que agora quebram de linha!
+                    altura_dinamica = max(600, len(dados_completos) * 50) 
                     
                     bar_options = {
                         "backgroundColor": "transparent",
@@ -366,7 +445,17 @@ if arquivos:
                         "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
                         "grid": {"top": 80, "left": "1%", "right": "15%", "bottom": "1%", "containLabel": True},
                         "xAxis": {"type": "value", "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}},
-                        "yAxis": {"type": "category", "data": dados_completos['ENTIDADE'].tolist(), "axisLabel": {"interval": 0, "width": 200, "overflow": "truncate", "color": "#1A1C1E"}},
+                        "yAxis": {
+                            "type": "category", 
+                            "data": dados_completos['ENTIDADE'].tolist(), 
+                            "axisLabel": {
+                                "interval": 0, 
+                                "width": 220, 
+                                "overflow": "break", # 💡 MÁGICA DA QUEBRA DE TEXTO NO GRÁFICO 
+                                "lineHeight": 14,
+                                "color": "#1A1C1E"
+                            }
+                        },
                         "series": [{"type": "bar", "data": dados_barras_formatados, "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}}]
                     }
                     st_echarts(options=bar_options, height=f"{altura_dinamica}px")
@@ -383,7 +472,6 @@ if arquivos:
                     tabela_final = dados_tabela.copy()
                     tabela_final['VALOR_STR'] = tabela_final['VALOR'].apply(formatar_contabil)
                     
-                    # 💡 MOTOR DE SOMA E MONTAGEM DA LINHA DE TOTAL
                     soma_total = tabela_final['VALOR'].sum()
                     soma_total_str = formatar_contabil(soma_total)
                     
@@ -392,7 +480,6 @@ if arquivos:
                     lista_valores = tabela_final['VALOR_STR'].tolist() + [soma_total_str]
                     lista_status = tabela_final['STATUS'].tolist() + ["-"]
 
-                    # Listas com código HTML Bold para a visualização na tela
                     lista_entidades_visual = tabela_final['ENTIDADE'].tolist() + ["<b>TOTAL GERAL</b>"]
                     lista_datas_visual = tabela_final['DATA'].tolist() + ["<b>-</b>"]
                     lista_valores_visual = tabela_final['VALOR_STR'].tolist() + [f"<b>{soma_total_str}</b>"]
@@ -415,9 +502,8 @@ if arquivos:
                     else:
                         st.error("⚠️ Biblioteca 'fpdf' não instalada. Atualize o ficheiro requirements.txt.")
 
-                    # 💡 LÓGICA DE CORES PARA DESTACAR A ÚLTIMA LINHA (TOTAL)
                     cor_linhas_normais = '#F8F9FB'
-                    cor_linha_total = '#D0D5DD' # Cinza mais destacado para o Total
+                    cor_linha_total = '#D0D5DD'
                     cores_tabela = [cor_linhas_normais] * len(tabela_final) + [cor_linha_total]
                     array_cores_fundo = [cores_tabela] * len(cabecalhos)
 
@@ -426,10 +512,10 @@ if arquivos:
                         header=dict(values=cabecalhos, fill_color='#111111', align='left', font=dict(color='white', size=13)),
                         cells=dict(
                             values=celulas, 
-                            fill_color=array_cores_fundo, # Aplica o cinza no fundo da última linha
+                            fill_color=array_cores_fundo,
                             align='left', 
                             font=dict(color='#1A1C1E', size=12), 
-                            height=45
+                            height=55 # 💡 ALTURA EXPANIDA NA TABELA VISUAL (Para as 2 linhas da Imporpeças)
                         )
                     )])
                     
