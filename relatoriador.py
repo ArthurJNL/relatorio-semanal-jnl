@@ -119,7 +119,11 @@ def processar_excel_hibrido(df):
 
     return [(m, pd.DataFrame(d, columns=cabecalho)) for m, d in blocos.items()]
 
-# --- MOTOR DE RELATÓRIO PDF (JNL) ---
+# --- MOTORES DE RELATÓRIO PDF (JNL) ---
+def limpar_texto(t):
+    import unicodedata
+    return unicodedata.normalize('NFKD', str(t)).encode('ASCII', 'ignore').decode('utf-8')
+
 if FPDF is not None:
     class PDFReport(FPDF):
         def header(self):
@@ -135,12 +139,6 @@ if FPDF is not None:
         pdf = PDFReport()
         pdf.add_page()
         pdf.set_font("Arial", 'B', 12)
-        
-        def limpar_texto(t):
-            import unicodedata
-            t = str(t)
-            return unicodedata.normalize('NFKD', t).encode('ASCII', 'ignore').decode('utf-8')
-        
         pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
         pdf.ln(5)
         
@@ -165,6 +163,40 @@ if FPDF is not None:
                 limite = int(widths[i] * 0.6)
                 if len(texto) > limite: texto = texto[:limite-3] + "..."
                 pdf.cell(widths[i], 8, texto, border=1)
+            pdf.ln()
+            
+        res = pdf.output(dest='S')
+        if isinstance(res, str): return res.encode('latin-1')
+        return bytes(res)
+
+    def gerar_pdf_ranking(df, titulo):
+        pdf = PDFReport()
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
+        pdf.ln(5)
+        
+        pdf.set_fill_color(17, 17, 17)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", 'B', 9)
+        pdf.cell(20, 8, "POS.", border=1, fill=True, align='C')
+        pdf.cell(120, 8, "RAZAO SOCIAL / DESCRICAO", border=1, fill=True, align='C')
+        pdf.cell(50, 8, "VALOR TOTAL", border=1, fill=True, align='C')
+        pdf.ln()
+        
+        pdf.set_text_color(26, 28, 30)
+        pdf.set_font("Arial", '', 8)
+        
+        df_ord = df.sort_values(by='VALOR', ascending=False).reset_index(drop=True)
+        for i, row in df_ord.iterrows():
+            pos = f"{i + 1}."
+            nome = limpar_texto(row['ENTIDADE'])
+            if len(nome) > 65: nome = nome[:62] + "..."
+            valor = f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            
+            pdf.cell(20, 8, pos, border=1, align='C')
+            pdf.cell(120, 8, nome, border=1)
+            pdf.cell(50, 8, valor, border=1, align='R')
             pdf.ln()
             
         res = pdf.output(dest='S')
@@ -308,8 +340,17 @@ if arquivos:
                 aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada"])
 
                 with aba_visu:
+                    # 💡 O TÍTULO MESTRE QUE COMANDA TUDO FICA AQUI
                     titulo_customizado_grafico = st.text_input("📝 Título Customizado (Gráfico):", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
-                    st.write("💡 *Exibição do relatório. Use a Câmera no topo do gráfico para salvar a foto.*")
+                    
+                    # 💡 NOVO BOTÃO DE PDF PARA O GRÁFICO (RANKING)
+                    col_g1, col_g2 = st.columns([3, 1])
+                    with col_g1:
+                        st.write("💡 *Use a Câmera no topo do gráfico para salvar a foto (PNG) da tela.*")
+                    with col_g2:
+                        if FPDF is not None:
+                            pdf_ranking_bytes = gerar_pdf_ranking(dados_grafico, titulo_customizado_grafico)
+                            st.download_button(label="📄 Baixar Ranking em PDF", data=pdf_ranking_bytes, file_name=f"Ranking_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True)
                     
                     dados_completos = dados_grafico.sort_values(by='VALOR', ascending=True)
                     dados_barras_formatados = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
@@ -328,12 +369,12 @@ if arquivos:
                     st_echarts(options=bar_options, height=f"{altura_dinamica}px")
 
                 with aba_tab:
-                    # 💡 NOVO CAMPO DE TÍTULO EXCLUSIVO PARA A TABELA
-                    titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value="RELAÇÃO DETALHADA")
+                    # 💡 O TÍTULO DA TABELA AGORA CLONA O TÍTULO DO GRÁFICO AUTOMATICAMENTE!
+                    titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value=titulo_customizado_grafico)
                     
                     col_t1, col_t2 = st.columns([3, 1])
                     with col_t1:
-                        st.write("💡 *A tabela visualiza apenas a primeira página. Para impressão completa, baixe o PDF.*")
+                        st.write("💡 *A tabela na tela quebra as linhas para caber o texto. Use a Câmera para baixar a foto (PNG) ou o botão para PDF.*")
                     with col_t2:
                         mostrar_situacao = st.toggle("Mostrar Coluna 'Situação'", value=True)
 
@@ -344,27 +385,29 @@ if arquivos:
                         df_pdf = pd.DataFrame({"RAZAO SOCIAL / DESCRICAO": tabela_final['ENTIDADE'], "DATA": tabela_final['DATA'], "VALOR": tabela_final['VALOR_STR'], "SITUACAO": tabela_final['STATUS']})
                         cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>", "<b>SITUAÇÃO</b>"]
                         celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR_STR'], tabela_final['STATUS']]
+                        larguras_colunas = [350, 100, 120, 120] # 💡 LARGURAS MATEMÁTICAS PARA QUEBRA DE TEXTO
                     else:
                         df_pdf = pd.DataFrame({"RAZAO SOCIAL / DESCRICAO": tabela_final['ENTIDADE'], "DATA": tabela_final['DATA'], "VALOR": tabela_final['VALOR_STR']})
                         cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>"]
                         celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR_STR']]
+                        larguras_colunas = [350, 120, 120] # 💡 LARGURAS MATEMÁTICAS PARA QUEBRA DE TEXTO
 
                     if FPDF is not None:
-                        # 💡 AQUI O PDF RECEBE O NOVO TÍTULO
                         pdf_bytes = gerar_pdf_tabela(df_pdf, titulo_tabela)
-                        st.download_button(label="📄 Baixar Relatório em PDF (Todas as Linhas)", data=pdf_bytes, file_name=f"Relatorio_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True)
+                        st.download_button(label="📄 Baixar Tabela em PDF (Todas as Linhas)", data=pdf_bytes, file_name=f"Detalhado_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True)
                     else:
                         st.error("⚠️ Biblioteca 'fpdf' não instalada. Atualize o requirements.txt.")
 
                     fig_table = go.Figure(data=[go.Table(
+                        columnwidth=larguras_colunas, # Força a quebra de linha inteligente
                         header=dict(values=cabecalhos, fill_color='#111111', align='left', font=dict(color='white', size=13)),
-                        cells=dict(values=celulas, fill_color='#F8F9FB', align='left', font=dict(color='#1A1C1E', size=12), height=30))
-                    ])
-                    # 💡 AQUI A FOTO DA TABELA RECEBE O TÍTULO
+                        cells=dict(values=celulas, fill_color='#F8F9FB', align='left', font=dict(color='#1A1C1E', size=12), height=45) # 💡 ALTURA DUPLA PARA CABER 2 LINHAS!
+                    )])
+                    
                     fig_table.update_layout(
                         title=dict(text=f"<b>{titulo_tabela}</b>", font=dict(color='#111111', size=16, family="Inter")),
                         margin=dict(l=0, r=0, b=0, t=40), 
-                        height=500, 
+                        height=550, 
                         paper_bgcolor='rgba(0,0,0,0)', 
                         plot_bgcolor='rgba(0,0,0,0)'
                     )
