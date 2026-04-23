@@ -136,7 +136,6 @@ if FPDF is not None:
         pdf.add_page()
         pdf.set_font("Arial", 'B', 12)
         
-        # Limpador de acentos para o PDF não corromper fontes
         def limpar_texto(t):
             import unicodedata
             t = str(t)
@@ -163,7 +162,7 @@ if FPDF is not None:
         for _, row in df.iterrows():
             for i, item in enumerate(row):
                 texto = limpar_texto(item)
-                limite = int(widths[i] * 0.6) # Evita transbordamento de texto
+                limite = int(widths[i] * 0.6)
                 if len(texto) > limite: texto = texto[:limite-3] + "..."
                 pdf.cell(widths[i], 8, texto, border=1)
             pdf.ln()
@@ -309,7 +308,7 @@ if arquivos:
                 aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada"])
 
                 with aba_visu:
-                    titulo_customizado = st.text_input("📝 Título Customizado:", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
+                    titulo_customizado_grafico = st.text_input("📝 Título Customizado (Gráfico):", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
                     st.write("💡 *Exibição do relatório. Use a Câmera no topo do gráfico para salvar a foto.*")
                     
                     dados_completos = dados_grafico.sort_values(by='VALOR', ascending=True)
@@ -318,7 +317,7 @@ if arquivos:
                     
                     bar_options = {
                         "backgroundColor": "transparent",
-                        "title": {"text": titulo_customizado, "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Inter"}},
+                        "title": {"text": titulo_customizado_grafico, "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Inter"}},
                         "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2}}},
                         "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
                         "grid": {"top": 80, "left": "1%", "right": "15%", "bottom": "1%", "containLabel": True},
@@ -329,16 +328,18 @@ if arquivos:
                     st_echarts(options=bar_options, height=f"{altura_dinamica}px")
 
                 with aba_tab:
+                    # 💡 NOVO CAMPO DE TÍTULO EXCLUSIVO PARA A TABELA
+                    titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value="RELAÇÃO DETALHADA")
+                    
                     col_t1, col_t2 = st.columns([3, 1])
                     with col_t1:
-                        st.write("💡 *A tabela visualiza apenas a primeira página. Para impressão completa, baixe o PDF abaixo.*")
+                        st.write("💡 *A tabela visualiza apenas a primeira página. Para impressão completa, baixe o PDF.*")
                     with col_t2:
                         mostrar_situacao = st.toggle("Mostrar Coluna 'Situação'", value=True)
 
                     tabela_final = dados_tabela.copy()
                     tabela_final['VALOR_STR'] = tabela_final['VALOR'].apply(formatar_contabil)
                     
-                    # 💡 MOTOR DE PDF (Montando a estrutura que vai pro papel)
                     if mostrar_situacao:
                         df_pdf = pd.DataFrame({"RAZAO SOCIAL / DESCRICAO": tabela_final['ENTIDADE'], "DATA": tabela_final['DATA'], "VALOR": tabela_final['VALOR_STR'], "SITUACAO": tabela_final['STATUS']})
                         cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>", "<b>SITUAÇÃO</b>"]
@@ -348,19 +349,25 @@ if arquivos:
                         cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>"]
                         celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR_STR']]
 
-                    # 💡 BOTÃO DE DOWNLOAD OFICIAL DO PDF
                     if FPDF is not None:
-                        pdf_bytes = gerar_pdf_tabela(df_pdf, titulo_customizado)
+                        # 💡 AQUI O PDF RECEBE O NOVO TÍTULO
+                        pdf_bytes = gerar_pdf_tabela(df_pdf, titulo_tabela)
                         st.download_button(label="📄 Baixar Relatório em PDF (Todas as Linhas)", data=pdf_bytes, file_name=f"Relatorio_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True)
                     else:
                         st.error("⚠️ Biblioteca 'fpdf' não instalada. Atualize o requirements.txt.")
 
-                    # 💡 TABELA VISUAL (Apenas a parte superior pro sistema não travar)
                     fig_table = go.Figure(data=[go.Table(
                         header=dict(values=cabecalhos, fill_color='#111111', align='left', font=dict(color='white', size=13)),
                         cells=dict(values=celulas, fill_color='#F8F9FB', align='left', font=dict(color='#1A1C1E', size=12), height=30))
                     ])
-                    fig_table.update_layout(margin=dict(l=0, r=0, b=0, t=0), height=500, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+                    # 💡 AQUI A FOTO DA TABELA RECEBE O TÍTULO
+                    fig_table.update_layout(
+                        title=dict(text=f"<b>{titulo_tabela}</b>", font=dict(color='#111111', size=16, family="Inter")),
+                        margin=dict(l=0, r=0, b=0, t=40), 
+                        height=500, 
+                        paper_bgcolor='rgba(0,0,0,0)', 
+                        plot_bgcolor='rgba(0,0,0,0)'
+                    )
                     st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
                     
             else: st.info("Todos os valores encontrados estão zerados no período selecionado.")
