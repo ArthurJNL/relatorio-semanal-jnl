@@ -55,7 +55,6 @@ def extrair_valor(v):
     except: return 0.0
 
 def converter_para_data(v):
-    # FORÇA O PADRÃO BRASILEIRO DE DATA (DIA/MÊS/ANO)
     return pd.to_datetime(v, errors='coerce', dayfirst=True)
 
 HOJE = pd.to_datetime('today').normalize()
@@ -79,7 +78,6 @@ def processar_excel_hibrido(df):
         valores_preenchidos = [str(x).strip().upper() for x in row.values if pd.notna(x)]
         linha_txt = " ".join(valores_preenchidos)
         
-        # Aumentamos o radar de busca de cabeçalhos
         palavras_chave = ['DATA', 'PREVISÃO', 'VALOR', 'A RECEBER', 'RECEBIDO', 'RAZÃO SOCIAL', 'CLIENTE']
         if len(valores_preenchidos) >= 3 and any(k in linha_txt for k in palavras_chave):
             cabecalho = [str(val).strip().upper() if pd.notna(val) and str(val).strip() != "" else f"COL_{idx}" for idx, val in enumerate(row.values)]
@@ -151,7 +149,6 @@ if arquivos:
     todos_os_blocos = []
     
     for arq in arquivos:
-        # Tática Blindada para ler CSV Brasileiro (Separado por Ponto e Vírgula)
         if arq.name.endswith('.csv'):
             arq.seek(0)
             try:
@@ -171,8 +168,6 @@ if arquivos:
 
     resumos_limpos = []
     for mes, df_mes in todos_os_blocos:
-        
-        # 1. ORDEM DE PRIORIDADE DE VALOR (Recebido ganha de A Receber)
         prioridades_valor = ['RECEBIDO', 'PAGO', 'VALOR', 'A RECEBER', 'A PAGAR']
         col_v = None
         for p in prioridades_valor:
@@ -181,7 +176,6 @@ if arquivos:
                 col_v = match
                 break
                 
-        # 2. ORDEM DE PRIORIDADE DE DATA
         prioridades_data = ['DATA', 'PREVISÃO', 'VENCIMENTO', 'PAGAMENTO', 'CRÉDITO']
         col_data = None
         for p in prioridades_data:
@@ -190,7 +184,6 @@ if arquivos:
                 col_data = match
                 break
         
-        # 3. ORDEM DE PRIORIDADE DE NOME
         prioridades_nome = ['RAZÃO SOCIAL', 'DESCRIÇÃO', 'FORNECEDOR', 'DEVEDOR', 'CLIENTE']
         col_d = None
         for p in prioridades_nome:
@@ -203,10 +196,7 @@ if arquivos:
         if col_v and col_d and col_data:
             df_tmp = df_mes.copy()
             df_tmp[col_v] = df_tmp[col_v].apply(extrair_valor)
-            
-            # TRATAMENTO DE DATAS BLINDADO (Garante o formato Brasileiro)
             df_tmp[col_data] = pd.to_datetime(df_tmp[col_data], errors='coerce', dayfirst=True).dt.normalize()
-            
             df_tmp[col_d] = df_tmp[col_d].astype(str).str.upper().str.strip()
             df_tmp[col_d] = df_tmp[col_d].replace(r'\s+', ' ', regex=True)
             df_tmp = df_tmp[df_tmp[col_d] != ""]
@@ -260,15 +250,16 @@ if arquivos:
                 m2.metric("Principal Entidade", dados_grafico.iloc[0]['ENTIDADE'])
                 m3.metric("Período Analisado", f"{dias_periodo} Dia(s)")
 
-                aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada (Com Vencimentos)"])
+                aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada"])
 
                 with aba_visu:
                     titulo_customizado = st.text_input("📝 Título Customizado:", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
                     st.write("💡 *Exibição do relatório. Use a Câmera no topo do gráfico para salvar a foto.*")
-                    top_15 = dados_grafico.head(15).sort_values(by='VALOR', ascending=True)
+                    
+                    dados_completos = dados_grafico.sort_values(by='VALOR', ascending=True)
                     
                     dados_barras_formatados = []
-                    for _, row in top_15.iterrows():
+                    for _, row in dados_completos.iterrows():
                         valor_num = row['VALOR']
                         str_valor = f"R$ {valor_num:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                         dados_barras_formatados.append({
@@ -276,26 +267,42 @@ if arquivos:
                             "label": {"show": True, "position": "right", "formatter": str_valor, "color": "#111111"}
                         })
                     
+                    altura_dinamica = max(600, len(dados_completos) * 35)
+                    
                     bar_options = {
                         "backgroundColor": "transparent",
                         "title": {"text": titulo_customizado, "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Inter"}},
                         "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2}}},
                         "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                        "grid": {"top": "15%", "left": "1%", "right": "15%", "bottom": "1%", "containLabel": True},
+                        "grid": {"top": 80, "left": "1%", "right": "15%", "bottom": "1%", "containLabel": True},
                         "xAxis": {"type": "value", "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}},
-                        "yAxis": {"type": "category", "data": top_15['ENTIDADE'].tolist(), "axisLabel": {"interval": 0, "width": 200, "overflow": "truncate", "color": "#1A1C1E"}},
+                        "yAxis": {"type": "category", "data": dados_completos['ENTIDADE'].tolist(), "axisLabel": {"interval": 0, "width": 200, "overflow": "truncate", "color": "#1A1C1E"}},
                         "series": [{"type": "bar", "data": dados_barras_formatados, "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}}]
                     }
-                    st_echarts(options=bar_options, height="600px")
+                    st_echarts(options=bar_options, height=f"{altura_dinamica}px")
 
                 with aba_tab:
-                    st.write("💡 *A tabela lista cada vencimento separadamente. Use a Câmera acima da tabela para salvar.*")
+                    # 💡 O NOVO INTERRUPTOR DE COLUNA
+                    col_t1, col_t2 = st.columns([3, 1])
+                    with col_t1:
+                        st.write("💡 *A tabela lista cada vencimento separadamente. Use a Câmera acima da tabela para salvar.*")
+                    with col_t2:
+                        mostrar_situacao = st.toggle("Mostrar Coluna 'Situação'", value=True)
+
                     tabela_final = dados_tabela.copy()
                     tabela_final['VALOR'] = tabela_final['VALOR'].apply(formatar_contabil)
                     
+                    # Motor inteligente que monta a tabela baseado no botão
+                    if mostrar_situacao:
+                        cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>", "<b>SITUAÇÃO</b>"]
+                        celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR'], tabela_final['STATUS']]
+                    else:
+                        cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>"]
+                        celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR']]
+
                     fig_table = go.Figure(data=[go.Table(
-                        header=dict(values=["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>", "<b>SITUAÇÃO</b>"], fill_color='#111111', align='left', font=dict(color='white', size=13)),
-                        cells=dict(values=[tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR'], tabela_final['STATUS']], fill_color='#F8F9FB', align='left', font=dict(color='#1A1C1E', size=12), height=30))
+                        header=dict(values=cabecalhos, fill_color='#111111', align='left', font=dict(color='white', size=13)),
+                        cells=dict(values=celulas, fill_color='#F8F9FB', align='left', font=dict(color='#1A1C1E', size=12), height=30))
                     ])
                     fig_table.update_layout(margin=dict(l=0, r=0, b=0, t=0), height=500, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                     st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
