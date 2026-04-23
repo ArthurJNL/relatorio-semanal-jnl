@@ -4,10 +4,10 @@ from streamlit_echarts import st_echarts
 import plotly.graph_objects as go
 import uuid
 
-# 1. SETUP DA PÁGINA (ESTILO PRETTYMAPP / GLASSMORPHISM)
+# 1. SETUP DA PÁGINA
 st.set_page_config(page_title="JNL Dash Pro", page_icon="🛡️", layout="wide")
 
-# --- DESIGN PREMIUM ---
+# --- DESIGN PREMIUM (GLASSMORPHISM) ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap');
@@ -25,9 +25,14 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# --- TRADUÇÃO DE MESES ---
+MESES_PT = {
+    1: "JANEIRO", 2: "FEVEREIRO", 3: "MARÇO", 4: "ABRIL", 5: "MAIO", 6: "JUNHO",
+    7: "JULHO", 8: "AGOSTO", 9: "SETEMBRO", 10: "OUTUBRO", 11: "NOVEMBRO", 12: "DEZEMBRO"
+}
+
 # --- MOTOR DE INTELIGÊNCIA JNL ---
 def formatar_contabil(valor):
-    """ Transforma número em string formato contábil R$ 1.234,56 """
     try:
         return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except:
@@ -40,46 +45,68 @@ def extrair_valor(v):
     try: return float(v)
     except: return 0.0
 
-def processar_excel_jnl(df):
-    blocos_detectados = []
-    mes_atual = None
+def converter_para_data(v):
+    return pd.to_datetime(v, errors='coerce')
+
+def processar_excel_hibrido(df):
+    """
+    Motor Híbrido:
+    1. Procura separadores 'MÊS:'
+    2. Se não achar, usa a coluna de data para criar os grupos de meses.
+    """
+    blocos = {}
+    mes_atual_separador = None
     cabecalho = None
     dados_temporarios = []
-    lista_meses = ['JANEIRO', 'FEVEREIRO', 'MARÇO', 'ABRIL', 'MAIO', 'JUNHO', 'JULHO', 'AGOSTO', 'SETEMBRO', 'OUTUBRO', 'NOVEMBRO', 'DEZEMBRO']
-
-    for _, row in df.iterrows():
-        linha_limpa = [str(x).strip().upper() for x in row.values if pd.notna(x)]
-        texto_linha = " ".join(linha_limpa)
-
-        if 'MÊS:' in texto_linha:
-            if mes_atual and dados_temporarios and cabecalho:
-                blocos_detectados.append((mes_atual, pd.DataFrame(dados_temporarios, columns=cabecalho)))
-                dados_temporarios = []
-            mes_atual = texto_linha.replace('MÊS:', '').strip()
-            continue
-
-        if 'DATA' in texto_linha and 'VALOR' in texto_linha:
+    
+    # Busca o cabeçalho primeiro
+    for i, row in df.iterrows():
+        linha_txt = " ".join([str(x).upper() for x in row.values if pd.notna(x)])
+        if any(k in linha_txt for k in ['DATA', 'PREVISÃO', 'VALOR', 'A RECEBER']):
             cabecalho = [str(x).strip().upper() for x in row.values if pd.notna(x)]
+            df_dados = df.iloc[i+1:].reset_index(drop=True)
+            break
+    
+    if cabecalho is None: return []
+
+    col_data_idx = next((i for i, c in enumerate(cabecalho) if 'DATA' in c or 'PREVISÃO' in c), None)
+    
+    for _, row in df_dados.iterrows():
+        linha_txt = " ".join([str(x).upper() for x in row.values if pd.notna(x)])
+        
+        # Caso 1: Detecta separador explícito (MÊS: MARÇO...)
+        if 'MÊS:' in linha_txt:
+            mes_atual_separador = linha_txt.replace('MÊS:', '').strip()
             continue
-
-        if mes_atual and cabecalho and any(pd.notna(x) for x in row.values):
-            if 'DATA' in texto_linha or 'CONTAS A PAGAR' in texto_linha:
+        
+        if any(pd.notna(x) for x in row.values):
+            if 'DATA' in linha_txt or 'PREVISÃO' in linha_txt or 'CONTAS A' in linha_txt:
                 continue
-            linha_dados = list(row.values)[:len(cabecalho)]
-            dados_temporarios.append(linha_dados)
+            
+            valores_linha = list(row.values)[:len(cabecalho)]
+            
+            # Define o nome do mês
+            nome_mes = mes_atual_separador
+            if nome_mes is None and col_data_idx is not None:
+                dt = converter_para_data(valores_linha[col_data_idx])
+                if pd.notnull(dt):
+                    nome_mes = f"{MESES_PT[dt.month]} / {dt.year}"
+            
+            if nome_mes is None: nome_mes = "SEM DATA"
+            
+            if nome_mes not in blocos: blocos[nome_mes] = []
+            blocos[nome_mes].append(valores_linha)
 
-    if mes_atual and dados_temporarios and cabecalho:
-        blocos_detectados.append((mes_atual, pd.DataFrame(dados_temporarios, columns=cabecalho)))
-    return blocos_detectados
+    return [(m, pd.DataFrame(d, columns=cabecalho)) for m, d in blocos.items()]
 
 # --- INTERFACE SIDEBAR ---
 with st.sidebar:
     st.title("🛡️ JNL Intelligence")
     st.markdown("---")
-    arquivos = st.file_uploader("Suba as planilhas (Ex: TESTE.xlsx)", type=["xlsx", "xls"], accept_multiple_files=True)
+    arquivos = st.file_uploader("Suba as planilhas (Pagar ou Receber)", type=["xlsx", "xls"], accept_multiple_files=True)
     st.markdown("---")
-    st.subheader("📅 Filtro Temporal")
-    espaco_filtro_meses = st.empty()
+    st.subheader("📅 Filtro de Meses")
+    espaco_filtro = st.empty()
 
 # --- LÓGICA PRINCIPAL ---
 if arquivos:
@@ -88,7 +115,7 @@ if arquivos:
 
     for arq in arquivos:
         df_bruto = pd.read_excel(arq, header=None)
-        resultados = processar_excel_jnl(df_bruto)
+        resultados = processar_excel_hibrido(df_bruto)
         for nome_mes, dados in resultados:
             todos_os_blocos.append((nome_mes, dados))
             if nome_mes not in meses_disponiveis:
@@ -96,16 +123,16 @@ if arquivos:
 
     if meses_disponiveis:
         with st.sidebar:
-            escolha_meses = st.multiselect("Selecione os meses:", options=meses_disponiveis, default=meses_disponiveis)
+            escolha_meses = st.multiselect("Filtrar meses:", options=sorted(meses_disponiveis), default=meses_disponiveis)
     
     st.markdown("# Painel Estratégico JNL")
-    comando_filtro = st.text_input("💬 Buscar Fornecedor ou Item...", placeholder="Ex: Grillo, Aluguel, Itaú...")
+    comando_filtro = st.text_input("💬 Filtrar por Razão Social / Descrição...", placeholder="Ex: ST SERVIÇOS, UNIMED, ALUGUEL...")
 
     resumos_finais = []
     for mes, df_mes in todos_os_blocos:
         if mes in escolha_meses:
-            col_v = next((c for c in df_mes.columns if 'VALOR' in c), None)
-            col_d = next((c for c in df_mes.columns if any(x in c for x in ['DESCRIÇÃO', 'DEVEDOR', 'FORNECEDOR'])), df_mes.columns[1])
+            col_v = next((c for c in df_mes.columns if any(k in c for k in ['VALOR', 'A RECEBER'])), None)
+            col_d = next((c for c in df_mes.columns if any(k in c for k in ['RAZÃO SOCIAL', 'DESCRIÇÃO', 'DEVEDOR', 'FORNECEDOR'])), df_mes.columns[1])
             
             if col_v and col_d:
                 df_mes[col_v] = df_mes[col_v].apply(extrair_valor)
@@ -115,55 +142,44 @@ if arquivos:
 
     if resumos_finais:
         df_total = pd.concat(resumos_finais)
-        nome_cat = df_total.columns[0]
-        nome_val = df_total.columns[1]
-        consolidado = df_total.groupby(nome_cat)[nome_val].sum().reset_index().sort_values(by=nome_val, ascending=False)
+        n_cat, n_val = df_total.columns[0], df_total.columns[1]
+        consolidado = df_total.groupby(n_cat)[n_val].sum().reset_index().sort_values(by=n_val, ascending=False)
         
         # --- KPIs ---
         m1, m2, m3 = st.columns(3)
-        total_cash = consolidado[nome_val].sum()
-        m1.metric("Total Acumulado", formatar_contabil(total_cash))
-        m2.metric("Maior Despesa", consolidado.iloc[0][nome_cat] if not consolidado.empty else "-")
-        m3.metric("Meses Ativos", len(escolha_meses))
+        total_cash = consolidado[n_val].sum()
+        m1.metric("Volume Total", formatar_contabil(total_cash))
+        m2.metric("Principal Entidade", consolidado.iloc[0][n_cat] if not consolidado.empty else "-")
+        m3.metric("Filtro Ativo", f"{len(escolha_meses)} Mês(es)")
 
         aba_visu, aba_tab = st.tabs(["📊 Gráfico Interativo", "📋 Tabela Detalhada (Contábil)"])
 
         with aba_visu:
-            st.write("💡 *Passe o mouse no gráfico e clique na Câmera no canto superior para baixar como foto.*")
+            st.write("💡 *Use a Câmera no topo do gráfico para salvar a foto.*")
             donut_options = {
-                "toolbox": {
-                    "show": True,
-                    "feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2}}
-                },
+                "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "PNG", "pixelRatio": 2}}},
                 "tooltip": {"trigger": "item"},
                 "series": [{
-                    "type": "pie",
-                    "radius": ["40%", "70%"],
+                    "type": "pie", "radius": ["40%", "70%"],
                     "itemStyle": {"borderRadius": 10, "borderColor": "#fff", "borderWidth": 2},
                     "label": {"show": True, "formatter": "{b}: {c}"},
-                    "data": [{"value": row[nome_val], "name": row[nome_cat]} for _, row in consolidado.iterrows()]
+                    "data": [{"value": row[n_val], "name": row[n_cat]} for _, row in consolidado.iterrows()]
                 }]
             }
             st_echarts(options=donut_options, height="550px")
 
         with aba_tab:
-            st.write("💡 *Use o ícone de Câmera acima da tabela para baixar esta lista como foto.*")
-            
-            # Formatação para exibição
+            st.write("💡 *Use a Câmera acima da tabela para salvar a foto.*")
             tabela_final = consolidado.copy()
-            tabela_final[nome_val] = tabela_final[nome_val].apply(formatar_contabil)
+            tabela_final[n_val] = tabela_final[n_val].apply(formatar_contabil)
             
-            # Criando Tabela via Plotly para permitir download como foto
             fig_table = go.Figure(data=[go.Table(
-                header=dict(values=[f"<b>{nome_cat}</b>", f"<b>{nome_val}</b>"],
-                            fill_color='#004AAD', align='left', font=dict(color='white', size=12)),
-                cells=dict(values=[tabela_final[nome_cat], tabela_final[nome_val]],
-                           fill_color='#F8F9FB', align='left', font=dict(size=12)))
+                header=dict(values=[f"<b>{n_cat}</b>", f"<b>{n_val}</b>"], fill_color='#004AAD', align='left', font=dict(color='white')),
+                cells=dict(values=[tabela_final[n_cat], tabela_final[n_val]], fill_color='#F8F9FB', align='left'))
             ])
             fig_table.update_layout(margin=dict(l=0, r=0, b=0, t=0), height=450)
-            st.plotly_chart(fig_table, use_container_width=True, config={'displaylogo': False, 'modeBarButtonsToAdd': ['toImage']})
-
+            st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
     else:
-        st.warning("⚠️ Selecione ao menos um mês para exibir os dados.")
+        st.warning("⚠️ Selecione os meses ou verifique o filtro de busca.")
 else:
-    st.info("Aguardando o envio da planilha...")
+    st.info("Aguardando o envio da planilha (Pagar ou Receber)...")
