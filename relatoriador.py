@@ -4,39 +4,37 @@ from streamlit_echarts import st_echarts
 import plotly.graph_objects as go
 from datetime import datetime
 
-# 1. SETUP DA PÁGINA (DARK MODE)
+# 1. SETUP DA PÁGINA (LIGHT MODE MINIMALISTA)
 st.set_page_config(page_title="JNL Dash Pro", page_icon="🛡️", layout="wide")
 
-# --- DESIGN PREMIUM BLACK (DARK MODE) ---
+# --- DESIGN PREMIUM CLEAN (B&W) ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap');
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     
-    /* Fundos Escuros */
-    .main { background-color: #0E0E10; }
-    [data-testid="stSidebar"] { background-color: #18181B; border-right: 1px solid #27272A; }
+    /* Fundos Claros e Limpos */
+    .main { background-color: #F8F9FB; }
+    [data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E0E4E8; }
     
-    /* Cartões, Gráficos e Tabelas (Efeito Vidro Escuro) */
+    /* Cartões, Gráficos e Tabelas (Efeito Vidro Claro) */
     .stMetric, .echarts-container, .js-plotly-plot {
-        background: #18181B !important;
-        border: 1px solid #27272A !important;
+        background: white !important;
+        border: 1px solid #E0E4E8 !important;
         border-radius: 15px !important;
         padding: 10px !important;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.8) !important;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.03) !important;
     }
     
-    /* Cores de Texto e Métricas */
-    h1, h2, h3, p, label { color: #F4F4F5 !important; }
-    [data-testid="stMetricValue"] { color: #FFFFFF !important; }
-    [data-testid="stMetricLabel"] { color: #A1A1AA !important; }
-    
-    /* Input de Pesquisa */
+    /* Ajuste da Barra de Pesquisa (Borda Preta ao invés de azul) */
     .stTextInput > div > div > input {
-        background-color: #27272A;
-        color: #FFFFFF;
-        border: 1px solid #3F3F46;
         border-radius: 12px;
+        border: 1px solid #D0D5DD;
+        padding: 12px 20px;
+    }
+    .stTextInput > div > div > input:focus {
+        border-color: #000000;
+        box-shadow: 0 0 0 1px #000000;
     }
     
     .stDeployButton {display:none;}
@@ -74,9 +72,16 @@ def converter_para_data(v):
 HOJE = pd.to_datetime('today').normalize()
 
 def calcular_status_vencimento(data_alvo):
-    if pd.isnull(data_alvo):
+    if pd.isnull(data_alvo) or str(data_alvo).strip() == "-":
         return "-"
     
+    # Tratamento caso a data venha como string do pandas
+    if isinstance(data_alvo, str):
+        try:
+            data_alvo = pd.to_datetime(data_alvo, format='%d/%m/%Y')
+        except:
+            return "-"
+
     dias_diferenca = (data_alvo - HOJE).days
     
     if dias_diferenca < 0:
@@ -204,7 +209,7 @@ if arquivos:
                 if comando_filtro:
                     df_mes = df_mes[df_mes[col_d].str.contains(comando_filtro.strip().upper(), case=False, na=False)]
                 
-                # Salva o bloco mantendo a coluna de DATA!
+                # Salva o bloco mantendo a coluna de DATA
                 resumos_finais.append(df_mes[[col_d, col_data, col_v]])
 
     if resumos_finais:
@@ -221,10 +226,8 @@ if arquivos:
         dados_tabela = df_total.groupby([n_cat, n_data])[n_val].sum().reset_index().sort_values(by=n_data, ascending=True)
         dados_tabela = dados_tabela[dados_tabela[n_val] > 0]
         
-        # Cria a coluna de Vencimento/Status
+        # Formata a data e calcula Status
         dados_tabela['STATUS'] = dados_tabela[n_data].apply(calcular_status_vencimento)
-        
-        # Formata a data para padrão Brasileiro (DD/MM/YYYY)
         dados_tabela[n_data] = dados_tabela[n_data].dt.strftime('%d/%m/%Y').fillna("-")
         
         if not dados_grafico.empty:
@@ -242,25 +245,23 @@ if arquivos:
                 
                 bar_options = {
                     "backgroundColor": "transparent",
-                    "textStyle": {"color": "#E0E0E0"},
-                    "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2, "iconStyle": {"borderColor": "#E0E0E0"}}}},
+                    "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2}}},
                     "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
                     "grid": {"left": "1%", "right": "12%", "bottom": "1%", "containLabel": True},
                     "xAxis": {
                         "type": "value", 
-                        "splitLine": {"lineStyle": {"type": "dashed", "color": "#333333"}},
-                        "axisLabel": {"color": "#A0A0A0"}
+                        "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}
                     },
                     "yAxis": {
                         "type": "category",
                         "data": top_15[n_cat].tolist(),
-                        "axisLabel": {"interval": 0, "width": 200, "overflow": "truncate", "color": "#E0E0E0"}
+                        "axisLabel": {"interval": 0, "width": 200, "overflow": "truncate", "color": "#1A1C1E"}
                     },
                     "series": [{
                         "type": "bar",
                         "data": top_15[n_val].tolist(),
-                        "itemStyle": {"color": "#4A90E2", "borderRadius": [0, 8, 8, 0]}, # Azul que contrasta no preto
-                        "label": {"show": True, "position": "right", "formatter": "R$ {c}", "color": "#E0E0E0"}
+                        "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}, # GRÁFICO PRETO
+                        "label": {"show": True, "position": "right", "formatter": "R$ {c}", "color": "#111111"}
                     }]
                 }
                 st_echarts(options=bar_options, height="600px")
@@ -270,15 +271,15 @@ if arquivos:
                 tabela_final = dados_tabela.copy()
                 tabela_final[n_val] = tabela_final[n_val].apply(formatar_contabil)
                 
-                # Montando a Tabela Plotly Dark Mode (Ordem: Nome | Data | Valor | Status)
+                # Montando a Tabela Plotly Light Mode + Black Accent (Ordem: Nome | Data | Valor | Status)
                 fig_table = go.Figure(data=[go.Table(
                     header=dict(
                         values=[f"<b>{n_cat}</b>", f"<b>{n_data}</b>", f"<b>{n_val}</b>", "<b>SITUAÇÃO</b>"], 
-                        fill_color='#000000', align='left', font=dict(color='white', size=13)
+                        fill_color='#111111', align='left', font=dict(color='white', size=13) # CABEÇALHO PRETO
                     ),
                     cells=dict(
                         values=[tabela_final[n_cat], tabela_final[n_data], tabela_final[n_val], tabela_final['STATUS']], 
-                        fill_color='#18181B', align='left', font=dict(color='#E0E0E0', size=12),
+                        fill_color='#F8F9FB', align='left', font=dict(color='#1A1C1E', size=12),
                         height=30
                     ))
                 ])
