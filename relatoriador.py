@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-from streamlit_echarts import st_echarts
 import plotly.graph_objects as go
 from datetime import datetime
 
@@ -18,7 +17,7 @@ st.markdown("""
     [data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E0E4E8; }
     
     /* Cartões, Gráficos e Tabelas (Efeito Vidro Claro) */
-    .stMetric, .echarts-container, .js-plotly-plot {
+    .stMetric, .js-plotly-plot {
         background: white !important;
         border: 1px solid #E0E4E8 !important;
         border-radius: 15px !important;
@@ -165,7 +164,7 @@ if arquivos:
         for nome_mes, dados in resultados:
             todos_os_blocos.append((nome_mes, dados))
 
-    # 2. Reúne e limpa todos os dados primeiro para encontrar as datas reais
+    # 2. Reúne e limpa todos os dados
     resumos_limpos = []
     for mes, df_mes in todos_os_blocos:
         col_v = next((c for c in df_mes.columns if any(k in c for k in ['VALOR', 'A RECEBER'])), None)
@@ -194,16 +193,14 @@ if arquivos:
             df_tmp = df_tmp[df_tmp[col_d] != "NAN"]
             df_tmp = df_tmp[df_tmp[col_d] != "NONE"]
             
-            # Padroniza as colunas para facilitar
             df_tmp = df_tmp.rename(columns={col_d: 'ENTIDADE', col_data: 'DATA', col_v: 'VALOR'})
             resumos_limpos.append(df_tmp[['ENTIDADE', 'DATA', 'VALOR']])
 
     if resumos_limpos:
         df_master = pd.concat(resumos_limpos)
-        df_master = df_master.dropna(subset=['DATA']) # Remove linhas sem data válida
+        df_master = df_master.dropna(subset=['DATA'])
         
         if not df_master.empty:
-            # Encontra a menor e maior data da planilha toda
             data_min = df_master['DATA'].min().date()
             data_max = df_master['DATA'].max().date()
             
@@ -217,7 +214,6 @@ if arquivos:
                     format="DD/MM/YYYY"
                 )
             
-            # Validação do período (Tratamento se o usuário clicar apenas em uma data)
             if isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 2:
                 dt_inicio, dt_fim = periodo_selecionado
             elif isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 1:
@@ -225,7 +221,6 @@ if arquivos:
             else:
                 dt_inicio, dt_fim = data_min, data_max
                 
-            # Filtra o Master DataFrame usando as datas escolhidas
             mask_data = (df_master['DATA'] >= pd.to_datetime(dt_inicio)) & (df_master['DATA'] <= pd.to_datetime(dt_fim))
             df_filtrado = df_master[mask_data]
 
@@ -257,44 +252,42 @@ if arquivos:
                 aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada (Com Vencimentos)"])
 
                 with aba_visu:
-                    # CAMPO DO TÍTULO PERSONALIZÁVEL
                     titulo_customizado = st.text_input(
                         "📝 Título Customizado do Gráfico (Aparecerá na foto baixada):", 
                         value=f"Ranking de Valores ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})"
                     )
                     
-                    st.write("💡 *Exibindo o Top 15 maiores. Use a Câmera no topo do gráfico para salvar a foto.*")
+                    st.write("💡 *Exibindo o Top 15 maiores. Use a Câmera no topo do gráfico para salvar a imagem em SVG (Vetor de Alta Resolução).*")
                     top_15 = dados_grafico.head(15).sort_values(by='VALOR', ascending=True)
                     
-                    bar_options = {
-                        "backgroundColor": "transparent",
-                        # INJEÇÃO DO TÍTULO NO GRÁFICO
-                        "title": {
-                            "text": titulo_customizado,
-                            "left": "center",
-                            "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Inter"}
-                        },
-                        "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2}}},
-                        "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                        # O top "15%" dá um espaço para o título respirar antes das barras
-                        "grid": {"top": "15%", "left": "1%", "right": "12%", "bottom": "1%", "containLabel": True},
-                        "xAxis": {
-                            "type": "value", 
-                            "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}
-                        },
-                        "yAxis": {
-                            "type": "category",
-                            "data": top_15['ENTIDADE'].tolist(),
-                            "axisLabel": {"interval": 0, "width": 200, "overflow": "truncate", "color": "#1A1C1E"}
-                        },
-                        "series": [{
-                            "type": "bar",
-                            "data": top_15['VALOR'].tolist(),
-                            "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}, 
-                            "label": {"show": True, "position": "right", "formatter": "R$ {c}", "color": "#111111"}
-                        }]
-                    }
-                    st_echarts(options=bar_options, height="600px")
+                    # CÚPULA DE FORMATAÇÃO: Forçando exatamente 2 casas decimais na escrita
+                    text_valores = top_15['VALOR'].apply(lambda x: f"<b>R$ {x:,.2f}</b>".replace(",", "X").replace(".", ",").replace("X", "."))
+                    
+                    # NOVO GRÁFICO (PLOTLY) PARA GARANTIR PDF/SVG E CASAS DECIMAIS EXATAS
+                    fig_bar = go.Figure(go.Bar(
+                        x=top_15['VALOR'],
+                        y=top_15['ENTIDADE'],
+                        orientation='h',
+                        marker_color='#111111',
+                        text=text_valores,
+                        textposition='outside',
+                        textfont=dict(color='#111111', family="Inter", size=12)
+                    ))
+
+                    fig_bar.update_layout(
+                        title=dict(text=titulo_customizado, x=0.5, font=dict(color='#111111', size=18, family="Inter")),
+                        xaxis=dict(showgrid=True, gridcolor='#E0E4E8', showticklabels=False), # Esconde números do rodapé para ficar limpo
+                        yaxis=dict(tickfont=dict(color='#1A1C1E', size=11)),
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        margin=dict(l=0, r=90, t=60, b=0), # Margem direita maior para caber as 2 casas decimais
+                        height=600
+                    )
+
+                    st.plotly_chart(fig_bar, use_container_width=True, config={
+                        'modeBarButtonsToAdd': ['toImage'],
+                        'toImageButtonOptions': {'format': 'svg', 'filename': 'Ranking_JNL_Dash'}
+                    })
 
                 with aba_tab:
                     st.write("💡 *A tabela lista cada vencimento separadamente. Use a Câmera acima da tabela para salvar.*")
@@ -318,7 +311,10 @@ if arquivos:
                         paper_bgcolor='rgba(0,0,0,0)',
                         plot_bgcolor='rgba(0,0,0,0)'
                     )
-                    st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
+                    st.plotly_chart(fig_table, use_container_width=True, config={
+                        'modeBarButtonsToAdd': ['toImage'],
+                        'toImageButtonOptions': {'format': 'svg', 'filename': 'Tabela_JNL_Dash'}
+                    })
             else:
                 st.info("Todos os valores encontrados estão zerados no período selecionado.")
         else:
