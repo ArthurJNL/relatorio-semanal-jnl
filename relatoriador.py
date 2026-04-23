@@ -40,7 +40,6 @@ def formatar_contabil(valor):
 def extrair_valor(v):
     if pd.isna(v): return 0.0
     if isinstance(v, (int, float)): return float(v)
-    # Limpeza robusta de string contábil brasileira
     v = str(v).upper().replace('R$', '').replace(' ', '')
     if ',' in v and '.' in v:
         v = v.replace('.', '').replace(',', '.')
@@ -57,7 +56,6 @@ def processar_excel_hibrido(df):
     mes_atual_separador = None
     cabecalho = None
     
-    # 1. Busca o cabeçalho real (Trava contra Falsos Positivos)
     for i, row in df.iterrows():
         valores_preenchidos = [str(x).strip().upper() for x in row.values if pd.notna(x)]
         linha_txt = " ".join(valores_preenchidos)
@@ -77,7 +75,6 @@ def processar_excel_hibrido(df):
 
     col_data_idx = next((i for i, c in enumerate(cabecalho) if 'DATA' in c or 'PREVISÃO' in c), None)
     
-    # 2. Processa os dados
     for _, row in df_dados.iterrows():
         valores_validos = [str(x).upper() for x in row.values if pd.notna(x)]
         if not valores_validos:
@@ -89,7 +86,6 @@ def processar_excel_hibrido(df):
             mes_atual_separador = linha_txt.replace('MÊS:', '').strip()
             continue
         
-        # Pula se for repetição de cabeçalho
         if ('DATA' in linha_txt or 'PREVISÃO' in linha_txt) and ('VALOR' in linha_txt or 'A RECEBER' in linha_txt):
             continue
             
@@ -104,7 +100,6 @@ def processar_excel_hibrido(df):
             if pd.notnull(dt):
                 nome_mes = f"{MESES_PT[dt.month]} / {dt.year}"
         
-        # Ignora linhas de "Soma Total" isoladas (geralmente só têm 1 ou 2 células preenchidas)
         if len(valores_validos) <= 2 and col_data_idx is not None and pd.isna(valores_linha[col_data_idx]):
             continue
         
@@ -142,14 +137,13 @@ if arquivos:
             escolha_meses = st.multiselect("Filtrar meses:", options=sorted(meses_disponiveis), default=meses_disponiveis)
     
     st.markdown("# Painel Estratégico JNL")
-    comando_filtro = st.text_input("💬 Buscar por Razão Social ou Descrição...", placeholder="Ex: IMPORPECAS, DOUTORES WEB...")
+    comando_filtro = st.text_input("💬 Buscar por Razão Social ou Descrição...", placeholder="Ex: IMPORPECAS, KS MAQUINAS...")
 
     resumos_finais = []
     for mes, df_mes in todos_os_blocos:
         if mes in escolha_meses:
             col_v = next((c for c in df_mes.columns if any(k in c for k in ['VALOR', 'A RECEBER'])), None)
             
-            # ORDEM DE PRIORIDADE VIP (Ignora o "Nome Fantasia" da JNL)
             prioridades_nome = ['RAZÃO SOCIAL', 'DESCRIÇÃO', 'FORNECEDOR', 'DEVEDOR']
             col_d = None
             for p in prioridades_nome:
@@ -158,13 +152,11 @@ if arquivos:
                     col_d = match
                     break
             
-            # Se não achar nada da lista, pega a segunda coluna
             if not col_d:
                 col_d = df_mes.columns[1] if len(df_mes.columns) > 1 else df_mes.columns[0]
             
             if col_v and col_d:
                 df_mes[col_v] = df_mes[col_v].apply(extrair_valor)
-                # Remove linhas onde a razão social está vazia
                 df_mes = df_mes.dropna(subset=[col_d])
                 df_mes = df_mes[df_mes[col_d].astype(str).str.strip() != ""]
                 
@@ -178,7 +170,6 @@ if arquivos:
         n_cat, n_val = df_total.columns[0], df_total.columns[1]
         consolidado = df_total.groupby(n_cat)[n_val].sum().reset_index().sort_values(by=n_val, ascending=False)
         
-        # Filtra os zerados para não "sujar" o gráfico
         consolidado = consolidado[consolidado[n_val] > 0]
         
         if not consolidado.empty:
@@ -189,21 +180,41 @@ if arquivos:
             m2.metric("Principal Entidade", consolidado.iloc[0][n_cat])
             m3.metric("Filtro Ativo", f"{len(escolha_meses)} Mês(es)")
 
-            aba_visu, aba_tab = st.tabs(["📊 Gráfico Interativo", "📋 Tabela Detalhada (Contábil)"])
+            aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada (Contábil)"])
 
             with aba_visu:
-                st.write("💡 *Use a Câmera no topo do gráfico para salvar a foto.*")
-                donut_options = {
+                st.write("💡 *Exibindo o Top 15 maiores. Use a Câmera no topo do gráfico para salvar a foto.*")
+                
+                # Prepara os dados para Barras Horizontais (Inverte a ordem para o maior ficar no topo)
+                top_15 = consolidado.head(15).sort_values(by=n_val, ascending=True)
+                
+                bar_options = {
                     "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2}}},
-                    "tooltip": {"trigger": "item"},
+                    "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                    "grid": {"left": "1%", "right": "12%", "bottom": "1%", "containLabel": True},
+                    "xAxis": {"type": "value", "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}},
+                    "yAxis": {
+                        "type": "category",
+                        "data": top_15[n_cat].tolist(),
+                        "axisLabel": {
+                            "interval": 0, 
+                            "width": 200, 
+                            "overflow": "truncate" # Se o nome da empresa for gigante, ele corta com "..."
+                        }
+                    },
                     "series": [{
-                        "type": "pie", "radius": ["40%", "70%"],
-                        "itemStyle": {"borderRadius": 10, "borderColor": "#fff", "borderWidth": 2},
-                        "label": {"show": True, "formatter": "{b}: {c}"},
-                        "data": [{"value": row[n_val], "name": row[n_cat]} for _, row in consolidado.iterrows()]
+                        "type": "bar",
+                        "data": top_15[n_val].tolist(),
+                        "itemStyle": {"color": "#004AAD", "borderRadius": [0, 8, 8, 0]},
+                        "label": {
+                            "show": True, 
+                            "position": "right", 
+                            "formatter": "R$ {c}" # Mostra o valor no final da barra
+                        }
                     }]
                 }
-                st_echarts(options=donut_options, height="550px")
+                # Aumentei a altura para 600px para as barras "respirarem"
+                st_echarts(options=bar_options, height="600px")
 
             with aba_tab:
                 st.write("💡 *Use a Câmera acima da tabela para salvar a foto.*")
