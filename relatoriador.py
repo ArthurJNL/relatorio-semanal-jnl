@@ -126,10 +126,6 @@ def limpar_texto(t):
 
 if FPDF is not None:
     class PDFReport(FPDF):
-        def header(self):
-            self.set_font('Arial', 'B', 10)
-            self.cell(0, 10, 'JNL Dash Pro - Relatorio Analitico', 0, 1, 'C')
-            self.ln(2)
         def footer(self):
             self.set_y(-15)
             self.set_font('Arial', 'I', 8)
@@ -340,13 +336,11 @@ if arquivos:
                 aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada"])
 
                 with aba_visu:
-                    # 💡 O TÍTULO MESTRE QUE COMANDA TUDO FICA AQUI
                     titulo_customizado_grafico = st.text_input("📝 Título Customizado (Gráfico):", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
                     
-                    # 💡 NOVO BOTÃO DE PDF PARA O GRÁFICO (RANKING)
                     col_g1, col_g2 = st.columns([3, 1])
                     with col_g1:
-                        st.write("💡 *Use a Câmera no topo do gráfico para salvar a foto (PNG) da tela.*")
+                        st.write("💡 *Use a Câmera no topo do gráfico para salvar a foto (PNG) da ecrã.*")
                     with col_g2:
                         if FPDF is not None:
                             pdf_ranking_bytes = gerar_pdf_ranking(dados_grafico, titulo_customizado_grafico)
@@ -369,12 +363,11 @@ if arquivos:
                     st_echarts(options=bar_options, height=f"{altura_dinamica}px")
 
                 with aba_tab:
-                    # 💡 O TÍTULO DA TABELA AGORA CLONA O TÍTULO DO GRÁFICO AUTOMATICAMENTE!
                     titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value=titulo_customizado_grafico)
                     
                     col_t1, col_t2 = st.columns([3, 1])
                     with col_t1:
-                        st.write("💡 *A tabela na tela quebra as linhas para caber o texto. Use a Câmera para baixar a foto (PNG) ou o botão para PDF.*")
+                        st.write("💡 *A tabela na ecrã quebra as linhas para caber o texto. Use a Câmera para baixar a foto (PNG) ou o botão para PDF.*")
                     with col_t2:
                         mostrar_situacao = st.toggle("Mostrar Coluna 'Situação'", value=True)
 
@@ -385,23 +378,23 @@ if arquivos:
                         df_pdf = pd.DataFrame({"RAZAO SOCIAL / DESCRICAO": tabela_final['ENTIDADE'], "DATA": tabela_final['DATA'], "VALOR": tabela_final['VALOR_STR'], "SITUACAO": tabela_final['STATUS']})
                         cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>", "<b>SITUAÇÃO</b>"]
                         celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR_STR'], tabela_final['STATUS']]
-                        larguras_colunas = [350, 100, 120, 120] # 💡 LARGURAS MATEMÁTICAS PARA QUEBRA DE TEXTO
+                        larguras_colunas = [350, 100, 120, 120]
                     else:
                         df_pdf = pd.DataFrame({"RAZAO SOCIAL / DESCRICAO": tabela_final['ENTIDADE'], "DATA": tabela_final['DATA'], "VALOR": tabela_final['VALOR_STR']})
                         cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>"]
                         celulas = [tabela_final['ENTIDADE'], tabela_final['DATA'], tabela_final['VALOR_STR']]
-                        larguras_colunas = [350, 120, 120] # 💡 LARGURAS MATEMÁTICAS PARA QUEBRA DE TEXTO
+                        larguras_colunas = [350, 120, 120]
 
                     if FPDF is not None:
                         pdf_bytes = gerar_pdf_tabela(df_pdf, titulo_tabela)
                         st.download_button(label="📄 Baixar Tabela em PDF (Todas as Linhas)", data=pdf_bytes, file_name=f"Detalhado_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True)
                     else:
-                        st.error("⚠️ Biblioteca 'fpdf' não instalada. Atualize o requirements.txt.")
+                        st.error("⚠️ Biblioteca 'fpdf' não instalada. Atualize o ficheiro requirements.txt.")
 
                     fig_table = go.Figure(data=[go.Table(
-                        columnwidth=larguras_colunas, # Força a quebra de linha inteligente
+                        columnwidth=larguras_colunas,
                         header=dict(values=cabecalhos, fill_color='#111111', align='left', font=dict(color='white', size=13)),
-                        cells=dict(values=celulas, fill_color='#F8F9FB', align='left', font=dict(color='#1A1C1E', size=12), height=45) # 💡 ALTURA DUPLA PARA CABER 2 LINHAS!
+                        cells=dict(values=celulas, fill_color='#F8F9FB', align='left', font=dict(color='#1A1C1E', size=12), height=45)
                     )])
                     
                     fig_table.update_layout(
@@ -414,5 +407,5 @@ if arquivos:
                     st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
                     
             else: st.info("Todos os valores encontrados estão zerados no período selecionado.")
-        else: st.warning("⚠️ Nenhuma data válida encontrada no arquivo. Verifique a coluna de datas.")
+        else: st.warning("⚠️ Nenhuma data válida encontrada no ficheiro. Verifique a coluna de datas.")
 else: st.info("Aguardando o envio da planilha (Pagar ou Receber)...")
