@@ -40,7 +40,12 @@ def formatar_contabil(valor):
 def extrair_valor(v):
     if pd.isna(v): return 0.0
     if isinstance(v, (int, float)): return float(v)
-    v = str(v).replace('R$', '').replace('.', '').replace(',', '.').strip()
+    # Limpeza robusta de string contábil brasileira
+    v = str(v).upper().replace('R$', '').replace(' ', '')
+    if ',' in v and '.' in v:
+        v = v.replace('.', '').replace(',', '.')
+    elif ',' in v:
+        v = v.replace(',', '.')
     try: return float(v)
     except: return 0.0
 
@@ -57,14 +62,13 @@ def processar_excel_hibrido(df):
         valores_preenchidos = [str(x).strip().upper() for x in row.values if pd.notna(x)]
         linha_txt = " ".join(valores_preenchidos)
         
-        # A TRAVA: Exige pelo menos 3 colunas para ser considerado cabeçalho
         if len(valores_preenchidos) >= 3 and any(k in linha_txt for k in ['DATA', 'PREVISÃO', 'VALOR', 'A RECEBER', 'RAZÃO SOCIAL']):
             cabecalho = []
             for idx, val in enumerate(row.values):
                 if pd.notna(val) and str(val).strip() != "":
                     cabecalho.append(str(val).strip().upper())
                 else:
-                    cabecalho.append(f"COLUNA_VAZIA_{idx}")
+                    cabecalho.append(f"COL_{idx}")
             
             df_dados = df.iloc[i+1:].reset_index(drop=True)
             break
@@ -85,7 +89,8 @@ def processar_excel_hibrido(df):
             mes_atual_separador = linha_txt.replace('MÊS:', '').strip()
             continue
         
-        if 'DATA' in linha_txt and 'VALOR' in linha_txt: # Ignora cabeçalhos repetidos
+        # Pula se for repetição de cabeçalho
+        if ('DATA' in linha_txt or 'PREVISÃO' in linha_txt) and ('VALOR' in linha_txt or 'A RECEBER' in linha_txt):
             continue
             
         valores_linha = list(row.values)[:len(cabecalho)]
@@ -99,7 +104,7 @@ def processar_excel_hibrido(df):
             if pd.notnull(dt):
                 nome_mes = f"{MESES_PT[dt.month]} / {dt.year}"
         
-        # Ignora linhas de "Soma Total" isoladas no meio/fim da planilha
+        # Ignora linhas de "Soma Total" isoladas (geralmente só têm 1 ou 2 células preenchidas)
         if len(valores_validos) <= 2 and col_data_idx is not None and pd.isna(valores_linha[col_data_idx]):
             continue
         
@@ -115,7 +120,7 @@ def processar_excel_hibrido(df):
 with st.sidebar:
     st.title("🛡️ JNL Intelligence")
     st.markdown("---")
-    arquivos = st.file_uploader("Suba as planilhas (Pagar ou Receber)", type=["xlsx", "xls"], accept_multiple_files=True)
+    arquivos = st.file_uploader("Suba as planilhas (Pagar/Receber)", type=["xlsx", "xls"], accept_multiple_files=True)
     st.markdown("---")
     st.subheader("📅 Filtro de Meses")
 
@@ -137,24 +142,35 @@ if arquivos:
             escolha_meses = st.multiselect("Filtrar meses:", options=sorted(meses_disponiveis), default=meses_disponiveis)
     
     st.markdown("# Painel Estratégico JNL")
-    comando_filtro = st.text_input("💬 Filtrar por Razão Social / Descrição...", placeholder="Ex: ST SERVIÇOS, UNIMED, ALUGUEL...")
+    comando_filtro = st.text_input("💬 Buscar por Razão Social ou Descrição...", placeholder="Ex: IMPORPECAS, DOUTORES WEB...")
 
     resumos_finais = []
     for mes, df_mes in todos_os_blocos:
         if mes in escolha_meses:
             col_v = next((c for c in df_mes.columns if any(k in c for k in ['VALOR', 'A RECEBER'])), None)
             
-            # O PARAQUEDAS: Evita o erro de IndexError se a tabela estiver cortada
-            fallback_col = df_mes.columns[1] if len(df_mes.columns) > 1 else df_mes.columns[0]
-            col_d = next((c for c in df_mes.columns if any(k in c for k in ['RAZÃO SOCIAL', 'DESCRIÇÃO', 'DEVEDOR', 'FORNECEDOR', 'NOME FANTASIA'])), fallback_col)
+            # ORDEM DE PRIORIDADE VIP (Ignora o "Nome Fantasia" da JNL)
+            prioridades_nome = ['RAZÃO SOCIAL', 'DESCRIÇÃO', 'FORNECEDOR', 'DEVEDOR']
+            col_d = None
+            for p in prioridades_nome:
+                match = next((c for c in df_mes.columns if p in c), None)
+                if match:
+                    col_d = match
+                    break
+            
+            # Se não achar nada da lista, pega a segunda coluna
+            if not col_d:
+                col_d = df_mes.columns[1] if len(df_mes.columns) > 1 else df_mes.columns[0]
             
             if col_v and col_d:
                 df_mes[col_v] = df_mes[col_v].apply(extrair_valor)
-                # Limpa linhas que não têm nome/razão social
+                # Remove linhas onde a razão social está vazia
                 df_mes = df_mes.dropna(subset=[col_d])
+                df_mes = df_mes[df_mes[col_d].astype(str).str.strip() != ""]
                 
                 if comando_filtro:
                     df_mes = df_mes[df_mes[col_d].astype(str).str.contains(comando_filtro, case=False, na=False)]
+                
                 resumos_finais.append(df_mes[[col_d, col_v]])
 
     if resumos_finais:
@@ -162,14 +178,14 @@ if arquivos:
         n_cat, n_val = df_total.columns[0], df_total.columns[1]
         consolidado = df_total.groupby(n_cat)[n_val].sum().reset_index().sort_values(by=n_val, ascending=False)
         
-        # Filtra valores zerados para não sujar o gráfico
+        # Filtra os zerados para não "sujar" o gráfico
         consolidado = consolidado[consolidado[n_val] > 0]
         
         if not consolidado.empty:
             # --- KPIs ---
             m1, m2, m3 = st.columns(3)
             total_cash = consolidado[n_val].sum()
-            m1.metric("Volume Total", formatar_contabil(total_cash))
+            m1.metric("Volume Total (Filtrado)", formatar_contabil(total_cash))
             m2.metric("Principal Entidade", consolidado.iloc[0][n_cat])
             m3.metric("Filtro Ativo", f"{len(escolha_meses)} Mês(es)")
 
@@ -201,8 +217,8 @@ if arquivos:
                 fig_table.update_layout(margin=dict(l=0, r=0, b=0, t=0), height=450)
                 st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
         else:
-            st.info("Todos os valores estão zerados ou vazios nos meses selecionados.")
+            st.info("Todos os valores encontrados estão zerados para os meses selecionados.")
     else:
-        st.warning("⚠️ Selecione os meses ou verifique o filtro de busca.")
+        st.warning("⚠️ O sistema não encontrou colunas de Valor/Razão Social válidas nestes meses.")
 else:
     st.info("Aguardando o envio da planilha (Pagar ou Receber)...")
