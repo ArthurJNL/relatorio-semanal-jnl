@@ -2,24 +2,43 @@ import streamlit as st
 import pandas as pd
 from streamlit_echarts import st_echarts
 import plotly.graph_objects as go
+from datetime import datetime
 
-# 1. SETUP DA PÁGINA
+# 1. SETUP DA PÁGINA (DARK MODE)
 st.set_page_config(page_title="JNL Dash Pro", page_icon="🛡️", layout="wide")
 
-# --- DESIGN PREMIUM (GLASSMORPHISM) ---
+# --- DESIGN PREMIUM BLACK (DARK MODE) ---
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap');
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-    .main { background-color: #F8F9FB; }
-    [data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E0E4E8; }
+    
+    /* Fundos Escuros */
+    .main { background-color: #0E0E10; }
+    [data-testid="stSidebar"] { background-color: #18181B; border-right: 1px solid #27272A; }
+    
+    /* Cartões, Gráficos e Tabelas (Efeito Vidro Escuro) */
     .stMetric, .echarts-container, .js-plotly-plot {
-        background: white !important;
-        border: 1px solid #E0E4E8 !important;
+        background: #18181B !important;
+        border: 1px solid #27272A !important;
         border-radius: 15px !important;
         padding: 10px !important;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.03) !important;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.8) !important;
     }
+    
+    /* Cores de Texto e Métricas */
+    h1, h2, h3, p, label { color: #F4F4F5 !important; }
+    [data-testid="stMetricValue"] { color: #FFFFFF !important; }
+    [data-testid="stMetricLabel"] { color: #A1A1AA !important; }
+    
+    /* Input de Pesquisa */
+    .stTextInput > div > div > input {
+        background-color: #27272A;
+        color: #FFFFFF;
+        border: 1px solid #3F3F46;
+        border-radius: 12px;
+    }
+    
     .stDeployButton {display:none;}
     </style>
     """, unsafe_allow_html=True)
@@ -51,6 +70,23 @@ def extrair_valor(v):
 def converter_para_data(v):
     return pd.to_datetime(v, errors='coerce')
 
+# --- O ROBÔ DO TEMPO (Cálculo de Vencimento) ---
+HOJE = pd.to_datetime('today').normalize()
+
+def calcular_status_vencimento(data_alvo):
+    if pd.isnull(data_alvo):
+        return "-"
+    
+    dias_diferenca = (data_alvo - HOJE).days
+    
+    if dias_diferenca < 0:
+        return f"🚨 Vencido há {abs(dias_diferenca)} dias"
+    elif dias_diferenca == 0:
+        return "⚠️ Vence HOJE"
+    else:
+        return f"✅ Vence em {dias_diferenca} dias"
+
+# --- PROCESSADOR DE EXCEL ---
 def processar_excel_hibrido(df):
     blocos = {}
     mes_atual_separador = None
@@ -67,7 +103,6 @@ def processar_excel_hibrido(df):
                     cabecalho.append(str(val).strip().upper())
                 else:
                     cabecalho.append(f"COL_{idx}")
-            
             df_dados = df.iloc[i+1:].reset_index(drop=True)
             break
             
@@ -77,8 +112,7 @@ def processar_excel_hibrido(df):
     
     for _, row in df_dados.iterrows():
         valores_validos = [str(x).upper() for x in row.values if pd.notna(x)]
-        if not valores_validos:
-            continue
+        if not valores_validos: continue
             
         linha_txt = " ".join(valores_validos)
         
@@ -103,9 +137,7 @@ def processar_excel_hibrido(df):
         if len(valores_validos) <= 2 and col_data_idx is not None and pd.isna(valores_linha[col_data_idx]):
             continue
         
-        if nome_mes is None: 
-            nome_mes = "SEM DATA"
-            
+        if nome_mes is None: nome_mes = "SEM DATA"
         if nome_mes not in blocos: blocos[nome_mes] = []
         blocos[nome_mes].append(valores_linha)
 
@@ -143,6 +175,7 @@ if arquivos:
     for mes, df_mes in todos_os_blocos:
         if mes in escolha_meses:
             col_v = next((c for c in df_mes.columns if any(k in c for k in ['VALOR', 'A RECEBER'])), None)
+            col_data = next((c for c in df_mes.columns if any(k in c for k in ['DATA', 'PREVISÃO'])), None)
             
             prioridades_nome = ['RAZÃO SOCIAL', 'DESCRIÇÃO', 'FORNECEDOR', 'DEVEDOR']
             col_d = None
@@ -155,81 +188,110 @@ if arquivos:
             if not col_d:
                 col_d = df_mes.columns[1] if len(df_mes.columns) > 1 else df_mes.columns[0]
             
-            if col_v and col_d:
+            if col_v and col_d and col_data:
+                # Tratamento de Valor e Data
                 df_mes[col_v] = df_mes[col_v].apply(extrair_valor)
-                df_mes = df_mes.dropna(subset=[col_d])
-                df_mes = df_mes[df_mes[col_d].astype(str).str.strip() != ""]
+                df_mes[col_data] = pd.to_datetime(df_mes[col_data], errors='coerce').dt.normalize()
+                
+                # Tratamento de Nomes (Limpeza)
+                df_mes[col_d] = df_mes[col_d].astype(str).str.upper().str.strip()
+                df_mes[col_d] = df_mes[col_d].replace(r'\s+', ' ', regex=True)
+                
+                df_mes = df_mes[df_mes[col_d] != ""]
+                df_mes = df_mes[df_mes[col_d] != "NAN"]
+                df_mes = df_mes[df_mes[col_d] != "NONE"]
                 
                 if comando_filtro:
-                    df_mes = df_mes[df_mes[col_d].astype(str).str.contains(comando_filtro, case=False, na=False)]
+                    df_mes = df_mes[df_mes[col_d].str.contains(comando_filtro.strip().upper(), case=False, na=False)]
                 
-                resumos_finais.append(df_mes[[col_d, col_v]])
+                # Salva o bloco mantendo a coluna de DATA!
+                resumos_finais.append(df_mes[[col_d, col_data, col_v]])
 
     if resumos_finais:
         df_total = pd.concat(resumos_finais)
-        n_cat, n_val = df_total.columns[0], df_total.columns[1]
-        consolidado = df_total.groupby(n_cat)[n_val].sum().reset_index().sort_values(by=n_val, ascending=False)
+        n_cat = df_total.columns[0]
+        n_data = df_total.columns[1]
+        n_val = df_total.columns[2]
         
-        consolidado = consolidado[consolidado[n_val] > 0]
+        # --- CÉREBRO 1: O GRÁFICO (Agrupa apenas por nome da Empresa) ---
+        dados_grafico = df_total.groupby(n_cat)[n_val].sum().reset_index().sort_values(by=n_val, ascending=False)
+        dados_grafico = dados_grafico[dados_grafico[n_val] > 0]
         
-        if not consolidado.empty:
-            # --- KPIs ---
+        # --- CÉREBRO 2: A TABELA DETALHADA (Agrupa por Empresa + Data) ---
+        dados_tabela = df_total.groupby([n_cat, n_data])[n_val].sum().reset_index().sort_values(by=n_data, ascending=True)
+        dados_tabela = dados_tabela[dados_tabela[n_val] > 0]
+        
+        # Cria a coluna de Vencimento/Status
+        dados_tabela['STATUS'] = dados_tabela[n_data].apply(calcular_status_vencimento)
+        
+        # Formata a data para padrão Brasileiro (DD/MM/YYYY)
+        dados_tabela[n_data] = dados_tabela[n_data].dt.strftime('%d/%m/%Y').fillna("-")
+        
+        if not dados_grafico.empty:
             m1, m2, m3 = st.columns(3)
-            total_cash = consolidado[n_val].sum()
+            total_cash = dados_grafico[n_val].sum()
             m1.metric("Volume Total (Filtrado)", formatar_contabil(total_cash))
-            m2.metric("Principal Entidade", consolidado.iloc[0][n_cat])
+            m2.metric("Principal Entidade", dados_grafico.iloc[0][n_cat])
             m3.metric("Filtro Ativo", f"{len(escolha_meses)} Mês(es)")
 
-            aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada (Contábil)"])
+            aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada (Com Vencimentos)"])
 
             with aba_visu:
                 st.write("💡 *Exibindo o Top 15 maiores. Use a Câmera no topo do gráfico para salvar a foto.*")
-                
-                # Prepara os dados para Barras Horizontais (Inverte a ordem para o maior ficar no topo)
-                top_15 = consolidado.head(15).sort_values(by=n_val, ascending=True)
+                top_15 = dados_grafico.head(15).sort_values(by=n_val, ascending=True)
                 
                 bar_options = {
-                    "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2}}},
+                    "backgroundColor": "transparent",
+                    "textStyle": {"color": "#E0E0E0"},
+                    "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2, "iconStyle": {"borderColor": "#E0E0E0"}}}},
                     "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
                     "grid": {"left": "1%", "right": "12%", "bottom": "1%", "containLabel": True},
-                    "xAxis": {"type": "value", "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}},
+                    "xAxis": {
+                        "type": "value", 
+                        "splitLine": {"lineStyle": {"type": "dashed", "color": "#333333"}},
+                        "axisLabel": {"color": "#A0A0A0"}
+                    },
                     "yAxis": {
                         "type": "category",
                         "data": top_15[n_cat].tolist(),
-                        "axisLabel": {
-                            "interval": 0, 
-                            "width": 200, 
-                            "overflow": "truncate" # Se o nome da empresa for gigante, ele corta com "..."
-                        }
+                        "axisLabel": {"interval": 0, "width": 200, "overflow": "truncate", "color": "#E0E0E0"}
                     },
                     "series": [{
                         "type": "bar",
                         "data": top_15[n_val].tolist(),
-                        "itemStyle": {"color": "#004AAD", "borderRadius": [0, 8, 8, 0]},
-                        "label": {
-                            "show": True, 
-                            "position": "right", 
-                            "formatter": "R$ {c}" # Mostra o valor no final da barra
-                        }
+                        "itemStyle": {"color": "#4A90E2", "borderRadius": [0, 8, 8, 0]}, # Azul que contrasta no preto
+                        "label": {"show": True, "position": "right", "formatter": "R$ {c}", "color": "#E0E0E0"}
                     }]
                 }
-                # Aumentei a altura para 600px para as barras "respirarem"
                 st_echarts(options=bar_options, height="600px")
 
             with aba_tab:
-                st.write("💡 *Use a Câmera acima da tabela para salvar a foto.*")
-                tabela_final = consolidado.copy()
+                st.write("💡 *A tabela lista cada vencimento separadamente. Use a Câmera acima da tabela para salvar.*")
+                tabela_final = dados_tabela.copy()
                 tabela_final[n_val] = tabela_final[n_val].apply(formatar_contabil)
                 
+                # Montando a Tabela Plotly Dark Mode (Ordem: Nome | Data | Valor | Status)
                 fig_table = go.Figure(data=[go.Table(
-                    header=dict(values=[f"<b>{n_cat}</b>", f"<b>{n_val}</b>"], fill_color='#004AAD', align='left', font=dict(color='white')),
-                    cells=dict(values=[tabela_final[n_cat], tabela_final[n_val]], fill_color='#F8F9FB', align='left'))
+                    header=dict(
+                        values=[f"<b>{n_cat}</b>", f"<b>{n_data}</b>", f"<b>{n_val}</b>", "<b>SITUAÇÃO</b>"], 
+                        fill_color='#000000', align='left', font=dict(color='white', size=13)
+                    ),
+                    cells=dict(
+                        values=[tabela_final[n_cat], tabela_final[n_data], tabela_final[n_val], tabela_final['STATUS']], 
+                        fill_color='#18181B', align='left', font=dict(color='#E0E0E0', size=12),
+                        height=30
+                    ))
                 ])
-                fig_table.update_layout(margin=dict(l=0, r=0, b=0, t=0), height=450)
+                fig_table.update_layout(
+                    margin=dict(l=0, r=0, b=0, t=0), 
+                    height=500,
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)'
+                )
                 st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
         else:
             st.info("Todos os valores encontrados estão zerados para os meses selecionados.")
     else:
-        st.warning("⚠️ O sistema não encontrou colunas de Valor/Razão Social válidas nestes meses.")
+        st.warning("⚠️ O sistema não encontrou dados válidos. Verifique se o arquivo tem Data, Razão Social e Valor.")
 else:
     st.info("Aguardando o envio da planilha (Pagar ou Receber)...")
