@@ -1,7 +1,15 @@
 import streamlit as st
 import pandas as pd
+from streamlit_echarts import st_echarts
 import plotly.graph_objects as go
 from datetime import datetime
+import tempfile
+import os
+
+try:
+    from ExtractTable import ExtractTable
+except ImportError:
+    ExtractTable = None
 
 # 1. SETUP DA PÁGINA (LIGHT MODE MINIMALISTA)
 st.set_page_config(page_title="JNL Dash Pro", page_icon="🛡️", layout="wide")
@@ -17,7 +25,7 @@ st.markdown("""
     [data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E0E4E8; }
     
     /* Cartões, Gráficos e Tabelas (Efeito Vidro Claro) */
-    .stMetric, .js-plotly-plot {
+    .stMetric, .echarts-container, .js-plotly-plot {
         background: white !important;
         border: 1px solid #E0E4E8 !important;
         border-radius: 15px !important;
@@ -25,7 +33,7 @@ st.markdown("""
         box-shadow: 0 4px 12px rgba(0,0,0,0.03) !important;
     }
     
-    /* Ajuste da Barra de Pesquisa (Borda Preta ao invés de azul) */
+    /* Ajuste da Barra de Pesquisa (Borda Preta) */
     .stTextInput > div > div > input {
         border-radius: 12px;
         border: 1px solid #D0D5DD;
@@ -150,21 +158,58 @@ def processar_excel_hibrido(df):
 with st.sidebar:
     st.title("🛡️ JNL Intelligence")
     st.markdown("---")
-    arquivos = st.file_uploader("Suba as planilhas (Pagar/Receber)", type=["xlsx", "xls"], accept_multiple_files=True)
+    
+    st.subheader("📷 Scanner de Imagens (OCR)")
+    imagem_up = st.file_uploader("Converta Foto em Planilha", type=["png", "jpg", "jpeg"])
+    
+    if imagem_up:
+        if st.button("🪄 Extrair Tabela", use_container_width=True):
+            if ExtractTable is None:
+                st.error("Biblioteca ExtractTable não instalada. Atualize o requirements.txt.")
+            elif "extracttable_key" not in st.secrets:
+                st.error("🔑 Chave da API ausente! Configure em 'Settings > Secrets'.")
+            else:
+                with st.spinner("A analisar os píxeis da imagem... (Pode demorar 15s)"):
+                    try:
+                        et_sess = ExtractTable(api_key=st.secrets["extracttable_key"])
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+                            tmp.write(imagem_up.getvalue())
+                            tmp_path = tmp.name
+                        
+                        tabelas_extraidas = et_sess.process_file(filepath=tmp_path, output_format="df")
+                        st.success(f"✅ {len(tabelas_extraidas)} tabela(s) encontrada(s)!")
+                        
+                        for i, df_ex in enumerate(tabelas_extraidas):
+                            csv = df_ex.to_csv(index=False).encode('utf-8')
+                            st.download_button(
+                                label=f"📥 Baixar Tabela {i+1} (Pronta para uso)",
+                                data=csv,
+                                file_name=f"OCR_Extraido_{i+1}.csv",
+                                mime="text/csv",
+                                key=f"dl_{i}"
+                            )
+                        os.remove(tmp_path)
+                    except Exception as e:
+                        st.error(f"Erro na extração: {e}")
     st.markdown("---")
+    
+    st.subheader("📁 Análise de Dados")
+    arquivos = st.file_uploader("Suba as planilhas (Pagar/Receber)", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
 
 # --- LÓGICA PRINCIPAL ---
 if arquivos:
     todos_os_blocos = []
     
-    # 1. Lê todos os arquivos
     for arq in arquivos:
-        df_bruto = pd.read_excel(arq, header=None)
+        if arq.name.endswith('.csv'):
+            df_bruto = pd.read_csv(arq, header=None)
+        else:
+            df_bruto = pd.read_excel(arq, header=None)
+            
         resultados = processar_excel_hibrido(df_bruto)
         for nome_mes, dados in resultados:
             todos_os_blocos.append((nome_mes, dados))
 
-    # 2. Reúne e limpa todos os dados
     resumos_limpos = []
     for mes, df_mes in todos_os_blocos:
         col_v = next((c for c in df_mes.columns if any(k in c for k in ['VALOR', 'A RECEBER'])), None)
@@ -230,7 +275,6 @@ if arquivos:
             if comando_filtro:
                 df_filtrado = df_filtrado[df_filtrado['ENTIDADE'].str.contains(comando_filtro.strip().upper(), case=False, na=False)]
 
-            # --- CÉREBROS DE AGRUPAMENTO ---
             dados_grafico = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
             dados_grafico = dados_grafico[dados_grafico['VALOR'] > 0]
             
@@ -257,37 +301,46 @@ if arquivos:
                         value=f"Ranking de Valores ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})"
                     )
                     
-                    st.write("💡 *Exibindo o Top 15 maiores. Use a Câmera no topo do gráfico para salvar a imagem em SVG (Vetor de Alta Resolução).*")
+                    st.write("💡 *Exibindo o Top 15 maiores. Use a Câmera no topo do gráfico para salvar a foto.*")
                     top_15 = dados_grafico.head(15).sort_values(by='VALOR', ascending=True)
                     
-                    # CÚPULA DE FORMATAÇÃO: Forçando exatamente 2 casas decimais na escrita
-                    text_valores = top_15['VALOR'].apply(lambda x: f"<b>R$ {x:,.2f}</b>".replace(",", "X").replace(".", ",").replace("X", "."))
+                    # 💡 TRUQUE DO ECHARTS: Forçando as 2 casas decimais sem mudar o design!
+                    dados_barras_formatados = []
+                    for _, row in top_15.iterrows():
+                        valor_num = row['VALOR']
+                        str_valor = f"R$ {valor_num:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                        dados_barras_formatados.append({
+                            "value": valor_num,
+                            "label": {"show": True, "position": "right", "formatter": str_valor, "color": "#111111"}
+                        })
                     
-                    # NOVO GRÁFICO (PLOTLY) PARA GARANTIR PDF/SVG E CASAS DECIMAIS EXATAS
-                    fig_bar = go.Figure(go.Bar(
-                        x=top_15['VALOR'],
-                        y=top_15['ENTIDADE'],
-                        orientation='h',
-                        marker_color='#111111',
-                        text=text_valores,
-                        textposition='outside',
-                        textfont=dict(color='#111111', family="Inter", size=12)
-                    ))
-
-                    fig_bar.update_layout(
-                        title=dict(text=titulo_customizado, x=0.5, font=dict(color='#111111', size=18, family="Inter")),
-                        xaxis=dict(showgrid=True, gridcolor='#E0E4E8', showticklabels=False), # Esconde números do rodapé para ficar limpo
-                        yaxis=dict(tickfont=dict(color='#1A1C1E', size=11)),
-                        plot_bgcolor='rgba(0,0,0,0)',
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        margin=dict(l=0, r=90, t=60, b=0), # Margem direita maior para caber as 2 casas decimais
-                        height=600
-                    )
-
-                    st.plotly_chart(fig_bar, use_container_width=True, config={
-                        'modeBarButtonsToAdd': ['toImage'],
-                        'toImageButtonOptions': {'format': 'svg', 'filename': 'Ranking_JNL_Dash'}
-                    })
+                    bar_options = {
+                        "backgroundColor": "transparent",
+                        "title": {
+                            "text": titulo_customizado,
+                            "left": "center",
+                            "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Inter"}
+                        },
+                        "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2}}},
+                        "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+                        "grid": {"top": "15%", "left": "1%", "right": "15%", "bottom": "1%", "containLabel": True},
+                        "xAxis": {
+                            "type": "value", 
+                            "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}
+                        },
+                        "yAxis": {
+                            "type": "category",
+                            "data": top_15['ENTIDADE'].tolist(),
+                            "axisLabel": {"interval": 0, "width": 200, "overflow": "truncate", "color": "#1A1C1E"}
+                        },
+                        "series": [{
+                            "type": "bar",
+                            "data": dados_barras_formatados,  # Aplica o truque aqui
+                            "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}
+                        }]
+                    }
+                    # Volta o st_echarts original (Não se esqueça de manter o streamlit-echarts no requirements.txt)
+                    st_echarts(options=bar_options, height="600px")
 
                 with aba_tab:
                     st.write("💡 *A tabela lista cada vencimento separadamente. Use a Câmera acima da tabela para salvar.*")
@@ -311,10 +364,7 @@ if arquivos:
                         paper_bgcolor='rgba(0,0,0,0)',
                         plot_bgcolor='rgba(0,0,0,0)'
                     )
-                    st.plotly_chart(fig_table, use_container_width=True, config={
-                        'modeBarButtonsToAdd': ['toImage'],
-                        'toImageButtonOptions': {'format': 'svg', 'filename': 'Tabela_JNL_Dash'}
-                    })
+                    st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
             else:
                 st.info("Todos os valores encontrados estão zerados no período selecionado.")
         else:
