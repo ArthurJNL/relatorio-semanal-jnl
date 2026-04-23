@@ -119,7 +119,7 @@ def processar_excel_hibrido(df):
 
 # --- INTERFACE SIDEBAR ---
 with st.sidebar:
-    st.title("🛡️ JNL Intelligence")
+    st.title("🛡️ CRIADOR DE RELATÓRIOS")
     st.markdown("---")
     
     st.subheader("📷 Scanner de Imagens (OCR)")
@@ -263,8 +263,8 @@ if arquivos:
                 aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada (Com Vencimentos)"])
 
                 with aba_visu:
-                    titulo_customizado = st.text_input("📝 Título Customizado:", value=f"Ranking de Valores ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
-                    st.write("💡 *Exibindo o Top 15 maiores. Use a Câmera no topo do gráfico para salvar a foto.*")
+                    titulo_customizado = st.text_input("📝 Título Customizado:", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
+                    st.write("💡 *Exibição do relatório. Use a Câmera no topo do gráfico para salvar a foto.*")
                     top_15 = dados_grafico.head(15).sort_values(by='VALOR', ascending=True)
                     
                     dados_barras_formatados = []
