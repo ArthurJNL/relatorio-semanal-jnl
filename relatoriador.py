@@ -3,23 +3,16 @@ import pandas as pd
 from streamlit_echarts import st_echarts
 import plotly.graph_objects as go
 from datetime import datetime
-import tempfile
-import os
 import math
 
 # --- MOTORES EXTERNOS ---
-try:
-    from ExtractTable import ExtractTable
-except ImportError:
-    ExtractTable = None
-
 try:
     from fpdf import FPDF
 except ImportError:
     FPDF = None
 
 # 1. SETUP DA PÁGINA (LIGHT MODE MINIMALISTA)
-st.set_page_config(page_title="JNL Dash Pro", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="RELATORIADOR", page_icon="🛡️", layout="wide")
 
 # --- DESIGN PREMIUM CLEAN (B&W) ---
 st.markdown("""
@@ -127,6 +120,10 @@ def limpar_texto(t):
 
 if FPDF is not None:
     class PDFReport(FPDF):
+        def header(self):
+            self.set_font('Arial', 'B', 10)
+            self.cell(0, 10, 'RELATORIADOR - Relatorio Analitico', 0, 1, 'C')
+            self.ln(2)
         def footer(self):
             self.set_y(-15)
             self.set_font('Arial', 'I', 8)
@@ -164,7 +161,6 @@ if FPDF is not None:
                 pdf.set_fill_color(255, 255, 255)
                 pdf.set_text_color(26, 28, 30)
                 
-            # Calcular a altura dinâmica necessária para quebrar linhas sem cortar
             max_linhas = 1
             for i, item in enumerate(row):
                 texto = limpar_texto(item)
@@ -176,7 +172,6 @@ if FPDF is not None:
                     
             h_linha = (max_linhas * line_height) + 2
             
-            # Quebra de página automática
             if pdf.get_y() + h_linha > 275:
                 pdf.add_page()
                 pdf.set_fill_color(17, 17, 17)
@@ -239,11 +234,10 @@ if FPDF is not None:
         
         for i, row in df_ord.iterrows():
             pos = f"{i + 1}."
-            nome = limpar_texto(row['ENTIDADE']) # O Limite de 65 caracteres foi completamente removido!
+            nome = limpar_texto(row['ENTIDADE']) 
             valor = f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
             linha_dados = [pos, nome, valor]
             
-            # Cálculo de altura estendida para o ranking também
             max_linhas = 1
             for j, item in enumerate(linha_dados):
                 w_util = widths[j] - 2
@@ -287,32 +281,10 @@ if FPDF is not None:
 
 # --- INTERFACE SIDEBAR ---
 with st.sidebar:
-    st.title("🛡️ CRIADOR DE RELATÓRIOS")
+    st.title("🛡️ RELATORIADOR")
     st.markdown("---")
-    
-    st.subheader("📷 Scanner de Imagens (OCR)")
-    imagem_up = st.file_uploader("Converta Foto em Planilha", type=["png", "jpg", "jpeg"])
-    if imagem_up:
-        if st.button("🪄 Extrair Tabela", use_container_width=True):
-            if ExtractTable is None: st.error("Biblioteca ExtractTable não instalada.")
-            elif "extracttable_key" not in st.secrets: st.error("🔑 Chave da API ausente!")
-            else:
-                with st.spinner("A analisar os píxeis..."):
-                    try:
-                        et_sess = ExtractTable(api_key=st.secrets["extracttable_key"])
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-                            tmp.write(imagem_up.getvalue())
-                            tmp_path = tmp.name
-                        tabelas_extraidas = et_sess.process_file(filepath=tmp_path, output_format="df")
-                        st.success(f"✅ {len(tabelas_extraidas)} tabela(s) encontrada(s)!")
-                        for i, df_ex in enumerate(tabelas_extraidas):
-                            csv = df_ex.to_csv(index=False).encode('utf-8')
-                            st.download_button(label=f"📥 Baixar Tabela {i+1}", data=csv, file_name=f"OCR_{i+1}.csv", mime="text/csv", key=f"dl_{i}")
-                        os.remove(tmp_path)
-                    except Exception as e: st.error(f"Erro: {e}")
-    st.markdown("---")
-    st.subheader("📁 Análise de Dados")
-    arquivos = st.file_uploader("Suba as planilhas (Pagar/Receber)", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
+    st.subheader("📁 GERADOR")
+    arquivos = st.file_uploader("Suba as planilhas que deseja transformar", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
 
 # --- LÓGICA PRINCIPAL ---
 if arquivos:
@@ -395,8 +367,8 @@ if arquivos:
             mask_data = (df_master['DATA'] >= pd.to_datetime(dt_inicio)) & (df_master['DATA'] <= pd.to_datetime(dt_fim))
             df_filtrado = df_master[mask_data]
 
-            st.markdown("# Painel Estratégico JNL")
-            comando_filtro = st.text_input("💬 Buscar por Razão Social ou Descrição...", placeholder="Ex: IMPORPECAS, KS MAQUINAS...")
+            st.markdown("# Relatório gerado")
+            comando_filtro = st.text_input("💬 Filtro de pesquisa...", placeholder="Ex: IMPORPECAS, KS MAQUINAS...")
             if comando_filtro: df_filtrado = df_filtrado[df_filtrado['ENTIDADE'].str.contains(comando_filtro.strip().upper(), case=False, na=False)]
 
             dados_grafico = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
@@ -417,25 +389,24 @@ if arquivos:
                 m1.metric("Volume Total (Filtrado)", formatar_contabil(total_cash))
                 m2.metric("Principal Entidade", dados_grafico.iloc[0]['ENTIDADE'])
                 m3.metric("Período Analisado", f"{dias_periodo} Dia(s)")
-                m4.metric("Qtd. Registos", f"{total_linhas} Linha(s)")
+                m4.metric("Quantidade de itens", f"{total_linhas} Linha(s)")
 
-                aba_visu, aba_tab = st.tabs(["📊 Gráfico de Ranking", "📋 Tabela Detalhada"])
+                aba_visu, aba_tab = st.tabs(["📊 Gráfico", "📋 Tabela Detalhada"])
 
                 with aba_visu:
                     titulo_customizado_grafico = st.text_input("📝 Título Customizado (Gráfico):", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
                     
                     col_g1, col_g2 = st.columns([3, 1])
                     with col_g1:
-                        st.write("💡 *O Gráfico agora quebra nomes longos em várias linhas. Use a Câmera para PNG ou o Botão para PDF.*")
+                        st.write("💡 *Baixe em PNG ou PDF.*")
                     with col_g2:
                         if FPDF is not None:
                             pdf_ranking_bytes = gerar_pdf_ranking(dados_grafico, titulo_customizado_grafico)
-                            st.download_button(label="📄 Baixar Ranking em PDF", data=pdf_ranking_bytes, file_name=f"Ranking_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True)
+                            st.download_button(label="📄 Baixar gráfico em PDF", data=pdf_ranking_bytes, file_name=f"Ranking_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True)
                     
                     dados_completos = dados_grafico.sort_values(by='VALOR', ascending=True)
                     dados_barras_formatados = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
                     
-                    # 💡 AUMENTADO: Mais espaço por empresa para caber os textos gigantes que agora quebram de linha!
                     altura_dinamica = max(600, len(dados_completos) * 50) 
                     
                     bar_options = {
@@ -451,7 +422,7 @@ if arquivos:
                             "axisLabel": {
                                 "interval": 0, 
                                 "width": 220, 
-                                "overflow": "break", # 💡 MÁGICA DA QUEBRA DE TEXTO NO GRÁFICO 
+                                "overflow": "break", 
                                 "lineHeight": 14,
                                 "color": "#1A1C1E"
                             }
@@ -465,7 +436,7 @@ if arquivos:
                     
                     col_t1, col_t2 = st.columns([3, 1])
                     with col_t1:
-                        st.write("💡 *A tabela na ecrã quebra as linhas para caber o texto. Use a Câmera para baixar a foto (PNG) ou o botão para PDF.*")
+                        st.write("💡 *Baixe em PNG ou PDF.*")
                     with col_t2:
                         mostrar_situacao = st.toggle("Mostrar Coluna 'Situação'", value=True)
 
@@ -498,7 +469,7 @@ if arquivos:
 
                     if FPDF is not None:
                         pdf_bytes = gerar_pdf_tabela(df_pdf, titulo_tabela)
-                        st.download_button(label="📄 Baixar Tabela em PDF (Com Total)", data=pdf_bytes, file_name=f"Detalhado_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True)
+                        st.download_button(label="📄 Baixar tabela em PDF", data=pdf_bytes, file_name=f"Detalhado_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True)
                     else:
                         st.error("⚠️ Biblioteca 'fpdf' não instalada. Atualize o ficheiro requirements.txt.")
 
@@ -515,7 +486,7 @@ if arquivos:
                             fill_color=array_cores_fundo,
                             align='left', 
                             font=dict(color='#1A1C1E', size=12), 
-                            height=55 # 💡 ALTURA EXPANIDA NA TABELA VISUAL (Para as 2 linhas da Imporpeças)
+                            height=55 
                         )
                     )])
                     
@@ -530,4 +501,4 @@ if arquivos:
                     
             else: st.info("Todos os valores encontrados estão zerados no período selecionado.")
         else: st.warning("⚠️ Nenhuma data válida encontrada no ficheiro. Verifique a coluna de datas.")
-else: st.info("Aguardando o envio da planilha (Pagar ou Receber)...")
+else: st.info("Aguardando o envio da planilha...")
