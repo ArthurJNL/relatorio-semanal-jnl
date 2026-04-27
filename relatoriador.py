@@ -207,7 +207,7 @@ if FPDF is not None:
                 
                 # ALINHAMENTO HORIZONTAL ESPECÍFICO POR COLUNA
                 col_upper = colunas[i].upper()
-                if "RAZAO" in col_upper or "DESCRI" in col_upper: align_h = 'L'
+                if "RAZÃO" in col_upper or "RAZAO" in col_upper or "DESCRI" in col_upper: align_h = 'L'
                 elif "DATA" in col_upper: align_h = 'C'
                 elif "VALOR" in col_upper: align_h = 'R'
                 elif "SITUA" in col_upper: align_h = 'C'
@@ -232,7 +232,8 @@ if FPDF is not None:
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Arial", 'B', 9)
         widths = [20, 120, 50]
-        colunas = ["POS.", "RAZAO SOCIAL / DESCRICAO", "VALOR TOTAL"]
+        # Aplicação dos acentos no cabeçalho do ranking
+        colunas = ["POS.", "RAZÃO SOCIAL / DESCRIÇÃO", "VALOR TOTAL"]
         for i, col in enumerate(colunas):
             pdf.cell(widths[i], 8, col, border=1, fill=True, align='C')
         pdf.ln()
@@ -475,13 +476,14 @@ if arquivos:
                     lista_valores_visual = tabela_final['VALOR_STR'].tolist() + [f"<b>{soma_total_str}</b>"]
                     lista_status_visual = tabela_final['STATUS'].tolist() + ["<b>-</b>"]
                     
+                    # Aplicação dos acentos no DF do gerador PDF
                     if mostrar_situacao:
-                        df_pdf = pd.DataFrame({"RAZAO SOCIAL / DESCRICAO": lista_entidades, "DATA": lista_datas, "VALOR": lista_valores, "SITUACAO": lista_status})
+                        df_pdf = pd.DataFrame({"RAZÃO SOCIAL / DESCRIÇÃO": lista_entidades, "DATA": lista_datas, "VALOR": lista_valores, "SITUAÇÃO": lista_status})
                         cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>", "<b>SITUAÇÃO</b>"]
                         celulas = [lista_entidades_visual, lista_datas_visual, lista_valores_visual, lista_status_visual]
                         larguras_colunas = [350, 100, 120, 120]
                     else:
-                        df_pdf = pd.DataFrame({"RAZAO SOCIAL / DESCRICAO": lista_entidades, "DATA": lista_datas, "VALOR": lista_valores})
+                        df_pdf = pd.DataFrame({"RAZÃO SOCIAL / DESCRIÇÃO": lista_entidades, "DATA": lista_datas, "VALOR": lista_valores})
                         cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>"]
                         celulas = [lista_entidades_visual, lista_datas_visual, lista_valores_visual]
                         larguras_colunas = [350, 120, 120]
