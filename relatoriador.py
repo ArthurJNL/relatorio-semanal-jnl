@@ -17,7 +17,7 @@ st.set_page_config(page_title="RELATORIADOR", page_icon="🛡️", layout="wide"
 # --- DESIGN PREMIUM CLEAN (B&W) ---
 st.markdown("""
     <style>
-    /* Mudança para a fonte Calibri exigida pelo Senhor */
+    /* Fonte Calibri exigida pelo Senhor */
     html, body, [class*="css"] { font-family: 'Calibri', sans-serif; }
     .main { background-color: #F8F9FB; }
     [data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E0E4E8; }
@@ -196,10 +196,24 @@ if FPDF is not None:
                 
                 style = 'DF' if is_total else 'D'
                 pdf.rect(x, y, w, h_linha, style)
-                pdf.set_xy(x, y + 1)
                 
-                # Exclusivamente Centralização HORIZONTAL ('C')
-                pdf.multi_cell(w, line_height, texto, border=0, align='C')
+                # CÁLCULO DE CENTRALIZAÇÃO VERTICAL
+                w_util = w - 2
+                w_texto = pdf.get_string_width(texto)
+                linhas_deste_texto = math.ceil(w_texto / w_util) if w_util > 0 else 1
+                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
+                
+                pdf.set_xy(x, offset_y)
+                
+                # ALINHAMENTO HORIZONTAL ESPECÍFICO POR COLUNA
+                col_upper = colunas[i].upper()
+                if "RAZAO" in col_upper or "DESCRI" in col_upper: align_h = 'L'
+                elif "DATA" in col_upper: align_h = 'C'
+                elif "VALOR" in col_upper: align_h = 'R'
+                elif "SITUA" in col_upper: align_h = 'C'
+                else: align_h = 'C'
+                
+                pdf.multi_cell(w, line_height, texto, border=0, align=align_h)
                 
             pdf.set_xy(start_x, start_y + h_linha)
             
@@ -264,10 +278,18 @@ if FPDF is not None:
                 y = start_y
                 
                 pdf.rect(x, y, w, h_linha, 'D')
-                pdf.set_xy(x, y + 1)
                 
-                # Exclusivamente Centralização HORIZONTAL ('C')
-                pdf.multi_cell(w, line_height, item, border=0, align='C')
+                # CÁLCULO DE CENTRALIZAÇÃO VERTICAL
+                w_util = w - 2
+                w_texto = pdf.get_string_width(item)
+                linhas_deste_texto = math.ceil(w_texto / w_util) if w_util > 0 else 1
+                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
+                
+                pdf.set_xy(x, offset_y)
+                
+                # ALINHAMENTO HORIZONTAL ESPECÍFICO POR COLUNA NO RANKING
+                align_h = 'C' if j == 0 else ('L' if j == 1 else 'R')
+                pdf.multi_cell(w, line_height, item, border=0, align=align_h)
                 
             pdf.set_xy(start_x, start_y + h_linha)
             
@@ -473,15 +495,23 @@ if arquivos:
                     cor_linha_total = '#D0D5DD'
                     cores_tabela = [cor_linhas_normais] * len(tabela_final) + [cor_linha_total]
                     array_cores_fundo = [cores_tabela] * len(cabecalhos)
+                    
+                    # CÁLCULO DINÂMICO DOS ALINHAMENTOS PARA O PLOTLY
+                    alinhamentos_plotly = []
+                    for cab in cabecalhos:
+                        if "RAZÃO" in cab or "DESCRIÇÃO" in cab: alinhamentos_plotly.append('left')
+                        elif "DATA" in cab: alinhamentos_plotly.append('center')
+                        elif "VALOR" in cab: alinhamentos_plotly.append('right')
+                        elif "SITUAÇÃO" in cab: alinhamentos_plotly.append('center')
+                        else: alinhamentos_plotly.append('center')
 
                     fig_table = go.Figure(data=[go.Table(
                         columnwidth=larguras_colunas,
-                        # Plotly configurado com Calibri e alinhamento central HORIZONTAL ('center')
-                        header=dict(values=cabecalhos, fill_color='#111111', align='center', font=dict(family='Calibri', color='white', size=13)),
+                        header=dict(values=cabecalhos, fill_color='#111111', align=alinhamentos_plotly, font=dict(family='Calibri', color='white', size=13)),
                         cells=dict(
                             values=celulas, 
                             fill_color=array_cores_fundo,
-                            align='center', 
+                            align=alinhamentos_plotly, 
                             font=dict(family='Calibri', color='#1A1C1E', size=12), 
                             height=55 
                         )
