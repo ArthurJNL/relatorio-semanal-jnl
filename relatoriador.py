@@ -17,8 +17,8 @@ st.set_page_config(page_title="RELATORIADOR", page_icon="🛡️", layout="wide"
 # --- DESIGN PREMIUM CLEAN (B&W) ---
 st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap');
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+    /* Mudança para a fonte Calibri exigida pelo Senhor */
+    html, body, [class*="css"] { font-family: 'Calibri', sans-serif; }
     .main { background-color: #F8F9FB; }
     [data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E0E4E8; }
     .stMetric, .echarts-container, .js-plotly-plot {
@@ -30,6 +30,7 @@ st.markdown("""
     }
     .stTextInput > div > div > input {
         border-radius: 12px; border: 1px solid #D0D5DD; padding: 12px 20px;
+        font-family: 'Calibri', sans-serif;
     }
     .stTextInput > div > div > input:focus {
         border-color: #000000; box-shadow: 0 0 0 1px #000000;
@@ -115,12 +116,10 @@ def processar_excel_hibrido(df):
 
 # --- MOTORES DE RELATÓRIO PDF DINÂMICO (JNL) ---
 def limpar_texto(t):
-    import unicodedata
-    return unicodedata.normalize('NFKD', str(t)).encode('ASCII', 'ignore').decode('utf-8')
+    return str(t).encode('latin-1', 'replace').decode('latin-1')
 
 if FPDF is not None:
     class PDFReport(FPDF):
-        # Removido o cabeçalho engessado "RELATORIADOR - Relatorio Analitico"
         def footer(self):
             self.set_y(-15)
             self.set_font('Arial', 'I', 8)
@@ -197,10 +196,16 @@ if FPDF is not None:
                 
                 style = 'DF' if is_total else 'D'
                 pdf.rect(x, y, w, h_linha, style)
-                pdf.set_xy(x, y + 1)
                 
-                align = 'L' if i == 0 else ('R' if "VALOR" in colunas[i].upper() else 'C')
-                pdf.multi_cell(w, line_height, texto, border=0, align=align)
+                # CÁLCULO DE CENTRALIZAÇÃO VERTICAL
+                w_util = w - 2
+                w_texto = pdf.get_string_width(texto)
+                linhas_deste_texto = math.ceil(w_texto / w_util) if w_util > 0 else 1
+                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
+                
+                pdf.set_xy(x, offset_y)
+                # Alinhamento horizontal forçado para o centro ("C") conforme pedido
+                pdf.multi_cell(w, line_height, texto, border=0, align='C')
                 
             pdf.set_xy(start_x, start_y + h_linha)
             
@@ -265,10 +270,16 @@ if FPDF is not None:
                 y = start_y
                 
                 pdf.rect(x, y, w, h_linha, 'D')
-                pdf.set_xy(x, y + 1)
                 
-                align = 'C' if j == 0 else ('L' if j == 1 else 'R')
-                pdf.multi_cell(w, line_height, item, border=0, align=align)
+                # CÁLCULO DE CENTRALIZAÇÃO VERTICAL
+                w_util = w - 2
+                w_texto = pdf.get_string_width(item)
+                linhas_deste_texto = math.ceil(w_texto / w_util) if w_util > 0 else 1
+                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
+                
+                pdf.set_xy(x, offset_y)
+                # Alinhamento horizontal forçado para o centro ("C") conforme pedido
+                pdf.multi_cell(w, line_height, item, border=0, align='C')
                 
             pdf.set_xy(start_x, start_y + h_linha)
             
@@ -371,7 +382,7 @@ if arquivos:
             dados_grafico = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
             dados_grafico = dados_grafico[dados_grafico['VALOR'] > 0]
             
-            dados_tabela = df_filtrado.groupby(['ENTIDADE', 'DATA'])['VALOR'].sum().reset_index().sort_values(by='DATA', ascending=True)
+            dados_tabela = df_filtrado.groupby(['ENTIDADE', 'DATA'])['VALOR'].sum().reset_index().sort_values(by=['ENTIDADE', 'DATA'], ascending=[True, True])
             dados_tabela = dados_tabela[dados_tabela['VALOR'] > 0]
             
             dados_tabela['STATUS'] = dados_tabela['DATA'].apply(calcular_status_vencimento)
@@ -408,7 +419,7 @@ if arquivos:
                     
                     bar_options = {
                         "backgroundColor": "transparent",
-                        "title": {"text": titulo_customizado_grafico, "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Inter"}},
+                        "title": {"text": titulo_customizado_grafico, "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Calibri"}},
                         "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2}}},
                         "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
                         "grid": {"top": 80, "left": "1%", "right": "15%", "bottom": "1%", "containLabel": True},
@@ -477,18 +488,19 @@ if arquivos:
 
                     fig_table = go.Figure(data=[go.Table(
                         columnwidth=larguras_colunas,
-                        header=dict(values=cabecalhos, fill_color='#111111', align='left', font=dict(color='white', size=13)),
+                        # Plotly configurado com Calibri e alinhamento central ('center')
+                        header=dict(values=cabecalhos, fill_color='#111111', align='center', font=dict(family='Calibri', color='white', size=13)),
                         cells=dict(
                             values=celulas, 
                             fill_color=array_cores_fundo,
-                            align='left', 
-                            font=dict(color='#1A1C1E', size=12), 
+                            align='center', 
+                            font=dict(family='Calibri', color='#1A1C1E', size=12), 
                             height=55 
                         )
                     )])
                     
                     fig_table.update_layout(
-                        title=dict(text=f"<b>{titulo_tabela}</b>", font=dict(color='#111111', size=16, family="Inter")),
+                        title=dict(text=f"<b>{titulo_tabela}</b>", font=dict(family='Calibri', color='#111111', size=16)),
                         margin=dict(l=0, r=0, b=0, t=40), 
                         height=550, 
                         paper_bgcolor='rgba(0,0,0,0)', 
