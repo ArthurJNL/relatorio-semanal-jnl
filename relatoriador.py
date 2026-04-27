@@ -196,15 +196,9 @@ if FPDF is not None:
                 
                 style = 'DF' if is_total else 'D'
                 pdf.rect(x, y, w, h_linha, style)
+                pdf.set_xy(x, y + 1)
                 
-                # CÁLCULO DE CENTRALIZAÇÃO VERTICAL
-                w_util = w - 2
-                w_texto = pdf.get_string_width(texto)
-                linhas_deste_texto = math.ceil(w_texto / w_util) if w_util > 0 else 1
-                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
-                
-                pdf.set_xy(x, offset_y)
-                # Alinhamento horizontal forçado para o centro ("C") conforme pedido
+                # Exclusivamente Centralização HORIZONTAL ('C')
                 pdf.multi_cell(w, line_height, texto, border=0, align='C')
                 
             pdf.set_xy(start_x, start_y + h_linha)
@@ -270,15 +264,9 @@ if FPDF is not None:
                 y = start_y
                 
                 pdf.rect(x, y, w, h_linha, 'D')
+                pdf.set_xy(x, y + 1)
                 
-                # CÁLCULO DE CENTRALIZAÇÃO VERTICAL
-                w_util = w - 2
-                w_texto = pdf.get_string_width(item)
-                linhas_deste_texto = math.ceil(w_texto / w_util) if w_util > 0 else 1
-                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
-                
-                pdf.set_xy(x, offset_y)
-                # Alinhamento horizontal forçado para o centro ("C") conforme pedido
+                # Exclusivamente Centralização HORIZONTAL ('C')
                 pdf.multi_cell(w, line_height, item, border=0, align='C')
                 
             pdf.set_xy(start_x, start_y + h_linha)
@@ -488,7 +476,7 @@ if arquivos:
 
                     fig_table = go.Figure(data=[go.Table(
                         columnwidth=larguras_colunas,
-                        # Plotly configurado com Calibri e alinhamento central ('center')
+                        # Plotly configurado com Calibri e alinhamento central HORIZONTAL ('center')
                         header=dict(values=cabecalhos, fill_color='#111111', align='center', font=dict(family='Calibri', color='white', size=13)),
                         cells=dict(
                             values=celulas, 
