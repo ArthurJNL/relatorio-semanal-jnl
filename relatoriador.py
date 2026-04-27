@@ -120,10 +120,7 @@ def limpar_texto(t):
 
 if FPDF is not None:
     class PDFReport(FPDF):
-        def header(self):
-            self.set_font('Arial', 'B', 10)
-            self.cell(0, 10, 'RELATORIADOR - Relatorio Analitico', 0, 1, 'C')
-            self.ln(2)
+        # Removido o cabeçalho engessado "RELATORIADOR - Relatorio Analitico"
         def footer(self):
             self.set_y(-15)
             self.set_font('Arial', 'I', 8)
