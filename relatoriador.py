@@ -133,8 +133,22 @@ if FPDF is not None:
         pdf.ln(5)
         
         colunas = list(df.columns)
-        if len(colunas) == 4: widths = [80, 25, 35, 50]
-        else: widths = [100, 45, 45]
+        
+        # Cálculo dinâmico das larguras baseado no que foi selecionado
+        base_widths = []
+        for c in colunas:
+            c_up = c.upper()
+            if "RAZÃO" in c_up or "DESCRI" in c_up: base_widths.append(80)
+            elif "DATA" in c_up: base_widths.append(25)
+            elif "DOC" in c_up: base_widths.append(30)
+            elif "NOTA" in c_up or "NF" in c_up: base_widths.append(30)
+            elif "PARC" in c_up: base_widths.append(20)
+            elif "VALOR" in c_up: base_widths.append(35)
+            elif "SITUA" in c_up: base_widths.append(40)
+            else: base_widths.append(30)
+            
+        fator = 190 / sum(base_widths)
+        widths = [w * fator for w in base_widths]
             
         pdf.set_fill_color(17, 17, 17)
         pdf.set_text_color(255, 255, 255)
@@ -209,6 +223,9 @@ if FPDF is not None:
                 col_upper = colunas[i].upper()
                 if "RAZÃO" in col_upper or "RAZAO" in col_upper or "DESCRI" in col_upper: align_h = 'L'
                 elif "DATA" in col_upper: align_h = 'C'
+                elif "DOC" in col_upper: align_h = 'C'
+                elif "NOTA" in col_upper or "NF" in col_upper: align_h = 'C'
+                elif "PARC" in col_upper: align_h = 'C'
                 elif "VALOR" in col_upper: align_h = 'R'
                 elif "SITUA" in col_upper: align_h = 'C'
                 else: align_h = 'C'
@@ -232,7 +249,6 @@ if FPDF is not None:
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Arial", 'B', 9)
         widths = [20, 120, 50]
-        # Aplicação dos acentos no cabeçalho do ranking
         colunas = ["POS.", "RAZÃO SOCIAL / DESCRIÇÃO", "VALOR TOTAL"]
         for i, col in enumerate(colunas):
             pdf.cell(widths[i], 8, col, border=1, fill=True, align='C')
@@ -344,6 +360,30 @@ if arquivos:
             if match:
                 col_data = match
                 break
+                
+        prioridades_doc = ['DOCUMENTO', 'DOC', 'FORMA DE PAGAMENTO', 'TIPO', 'MODALIDADE']
+        col_doc = None
+        for p in prioridades_doc:
+            match = next((c for c in df_mes.columns if p in c), None)
+            if match:
+                col_doc = match
+                break
+                
+        prioridades_nf = ['NOTA FISCAL', 'NF', 'N.F', 'NOTA']
+        col_nf = None
+        for p in prioridades_nf:
+            match = next((c for c in df_mes.columns if p in c.upper() or p == c.upper().strip()), None)
+            if match:
+                col_nf = match
+                break
+                
+        prioridades_parc = ['PARCELA', 'PARC', 'Nº PARCELA', 'NUMERO PARCELA']
+        col_parc = None
+        for p in prioridades_parc:
+            match = next((c for c in df_mes.columns if p in c.upper() or p == c.upper().strip()), None)
+            if match:
+                col_parc = match
+                break
         
         prioridades_nome = ['RAZÃO SOCIAL', 'DESCRIÇÃO', 'FORNECEDOR', 'DEVEDOR', 'CLIENTE']
         col_d = None
@@ -364,8 +404,26 @@ if arquivos:
             df_tmp = df_tmp[df_tmp[col_d] != "NAN"]
             df_tmp = df_tmp[df_tmp[col_d] != "NONE"]
             
+            if col_doc:
+                df_tmp['DOCUMENTO'] = df_tmp[col_doc].astype(str).str.upper().str.strip()
+                df_tmp['DOCUMENTO'] = df_tmp['DOCUMENTO'].replace(['NAN', 'NONE', ''], '-')
+            else:
+                df_tmp['DOCUMENTO'] = "-"
+                
+            if col_nf:
+                df_tmp['NOTA FISCAL'] = df_tmp[col_nf].astype(str).str.upper().str.strip()
+                df_tmp['NOTA FISCAL'] = df_tmp['NOTA FISCAL'].replace(['NAN', 'NONE', ''], '-')
+            else:
+                df_tmp['NOTA FISCAL'] = "-"
+                
+            if col_parc:
+                df_tmp['PARCELA'] = df_tmp[col_parc].astype(str).str.upper().str.strip()
+                df_tmp['PARCELA'] = df_tmp['PARCELA'].replace(['NAN', 'NONE', ''], '-')
+            else:
+                df_tmp['PARCELA'] = "-"
+            
             df_tmp = df_tmp.rename(columns={col_d: 'ENTIDADE', col_data: 'DATA', col_v: 'VALOR'})
-            resumos_limpos.append(df_tmp[['ENTIDADE', 'DATA', 'VALOR']])
+            resumos_limpos.append(df_tmp[['ENTIDADE', 'DATA', 'DOCUMENTO', 'NOTA FISCAL', 'PARCELA', 'VALOR']])
 
     if resumos_limpos:
         df_master = pd.concat(resumos_limpos)
@@ -393,8 +451,8 @@ if arquivos:
             dados_grafico = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
             dados_grafico = dados_grafico[dados_grafico['VALOR'] > 0]
             
-            # ORDENAÇÃO APLICADA: Data (crescente) seguida por Entidade (alfabética)
-            dados_tabela = df_filtrado.groupby(['ENTIDADE', 'DATA'])['VALOR'].sum().reset_index().sort_values(by=['DATA', 'ENTIDADE'], ascending=[True, True])
+            # ORDENAÇÃO APLICADA: Preservando os detalhes na agregação
+            dados_tabela = df_filtrado.groupby(['ENTIDADE', 'DATA', 'DOCUMENTO', 'NOTA FISCAL', 'PARCELA'])['VALOR'].sum().reset_index().sort_values(by=['DATA', 'ENTIDADE'], ascending=[True, True])
             dados_tabela = dados_tabela[dados_tabela['VALOR'] > 0]
             
             dados_tabela['STATUS'] = dados_tabela['DATA'].apply(calcular_status_vencimento)
@@ -454,11 +512,13 @@ if arquivos:
                 with aba_tab:
                     titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value=titulo_customizado_grafico)
                     
-                    col_t1, col_t2 = st.columns([3, 1])
-                    with col_t1:
-                        st.write("💡 *Baixe em PNG ou PDF.*")
-                    with col_t2:
-                        mostrar_situacao = st.toggle("Mostrar Coluna 'Situação'", value=True)
+                    st.write("💡 *Controle as colunas visíveis e baixe em PDF.*")
+                    # Interruptores de Colunas Opcionais em linha
+                    c_t1, c_t2, c_t3, c_t4 = st.columns(4)
+                    with c_t1: mostrar_documento = st.toggle("Mostrar 'Documento'", value=True)
+                    with c_t2: mostrar_nf = st.toggle("Mostrar 'Nota Fiscal'", value=True)
+                    with c_t3: mostrar_parc = st.toggle("Mostrar 'Parcela'", value=True)
+                    with c_t4: mostrar_situacao = st.toggle("Mostrar 'Situação'", value=True)
 
                     tabela_final = dados_tabela.copy()
                     tabela_final['VALOR_STR'] = tabela_final['VALOR'].apply(formatar_contabil)
@@ -468,25 +528,56 @@ if arquivos:
                     
                     lista_entidades = tabela_final['ENTIDADE'].tolist() + ["TOTAL GERAL"]
                     lista_datas = tabela_final['DATA'].tolist() + ["-"]
+                    lista_documentos = tabela_final['DOCUMENTO'].tolist() + ["-"]
+                    lista_nfs = tabela_final['NOTA FISCAL'].tolist() + ["-"]
+                    lista_parcs = tabela_final['PARCELA'].tolist() + ["-"]
                     lista_valores = tabela_final['VALOR_STR'].tolist() + [soma_total_str]
                     lista_status = tabela_final['STATUS'].tolist() + ["-"]
 
                     lista_entidades_visual = tabela_final['ENTIDADE'].tolist() + ["<b>TOTAL GERAL</b>"]
                     lista_datas_visual = tabela_final['DATA'].tolist() + ["<b>-</b>"]
+                    lista_documentos_visual = tabela_final['DOCUMENTO'].tolist() + ["<b>-</b>"]
+                    lista_nfs_visual = tabela_final['NOTA FISCAL'].tolist() + ["<b>-</b>"]
+                    lista_parcs_visual = tabela_final['PARCELA'].tolist() + ["<b>-</b>"]
                     lista_valores_visual = tabela_final['VALOR_STR'].tolist() + [f"<b>{soma_total_str}</b>"]
                     lista_status_visual = tabela_final['STATUS'].tolist() + ["<b>-</b>"]
                     
-                    # Aplicação dos acentos no DF do gerador PDF
+                    # Criação Dinâmica do DataFrame do PDF e Plotly
+                    cols_pdf = {"RAZÃO SOCIAL / DESCRIÇÃO": lista_entidades, "DATA": lista_datas}
+                    cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>"]
+                    celulas = [lista_entidades_visual, lista_datas_visual]
+                    larguras_colunas = [300, 90]
+                    
+                    if mostrar_documento:
+                        cols_pdf["DOCUMENTO"] = lista_documentos
+                        cabecalhos.append("<b>DOCUMENTO</b>")
+                        celulas.append(lista_documentos_visual)
+                        larguras_colunas.append(90)
+                        
+                    if mostrar_nf:
+                        cols_pdf["NOTA FISCAL"] = lista_nfs
+                        cabecalhos.append("<b>NOTA FISCAL</b>")
+                        celulas.append(lista_nfs_visual)
+                        larguras_colunas.append(90)
+                        
+                    if mostrar_parc:
+                        cols_pdf["PARCELA"] = lista_parcs
+                        cabecalhos.append("<b>PARCELA</b>")
+                        celulas.append(lista_parcs_visual)
+                        larguras_colunas.append(80)
+                        
+                    cols_pdf["VALOR"] = lista_valores
+                    cabecalhos.append("<b>VALOR</b>")
+                    celulas.append(lista_valores_visual)
+                    larguras_colunas.append(110)
+                    
                     if mostrar_situacao:
-                        df_pdf = pd.DataFrame({"RAZÃO SOCIAL / DESCRIÇÃO": lista_entidades, "DATA": lista_datas, "VALOR": lista_valores, "SITUAÇÃO": lista_status})
-                        cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>", "<b>SITUAÇÃO</b>"]
-                        celulas = [lista_entidades_visual, lista_datas_visual, lista_valores_visual, lista_status_visual]
-                        larguras_colunas = [350, 100, 120, 120]
-                    else:
-                        df_pdf = pd.DataFrame({"RAZÃO SOCIAL / DESCRIÇÃO": lista_entidades, "DATA": lista_datas, "VALOR": lista_valores})
-                        cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>", "<b>VALOR</b>"]
-                        celulas = [lista_entidades_visual, lista_datas_visual, lista_valores_visual]
-                        larguras_colunas = [350, 120, 120]
+                        cols_pdf["SITUAÇÃO"] = lista_status
+                        cabecalhos.append("<b>SITUAÇÃO</b>")
+                        celulas.append(lista_status_visual)
+                        larguras_colunas.append(120)
+                        
+                    df_pdf = pd.DataFrame(cols_pdf)
 
                     if FPDF is not None:
                         pdf_bytes = gerar_pdf_tabela(df_pdf, titulo_tabela)
@@ -501,10 +592,14 @@ if arquivos:
                     
                     alinhamentos_plotly = []
                     for cab in cabecalhos:
-                        if "RAZÃO" in cab or "DESCRIÇÃO" in cab: alinhamentos_plotly.append('left')
-                        elif "DATA" in cab: alinhamentos_plotly.append('center')
-                        elif "VALOR" in cab: alinhamentos_plotly.append('right')
-                        elif "SITUAÇÃO" in cab: alinhamentos_plotly.append('center')
+                        cab_up = cab.upper()
+                        if "RAZÃO" in cab_up or "DESCRIÇÃO" in cab_up: alinhamentos_plotly.append('left')
+                        elif "DATA" in cab_up: alinhamentos_plotly.append('center')
+                        elif "DOC" in cab_up: alinhamentos_plotly.append('center')
+                        elif "NOTA" in cab_up or "NF" in cab_up: alinhamentos_plotly.append('center')
+                        elif "PARC" in cab_up: alinhamentos_plotly.append('center')
+                        elif "VALOR" in cab_up: alinhamentos_plotly.append('right')
+                        elif "SITUAÇÃO" in cab_up: alinhamentos_plotly.append('center')
                         else: alinhamentos_plotly.append('center')
 
                     fig_table = go.Figure(data=[go.Table(
