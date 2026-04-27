@@ -116,7 +116,12 @@ def processar_excel_hibrido(df):
 
 # --- MOTORES DE RELATÓRIO PDF DINÂMICO (JNL) ---
 def limpar_texto(t):
-    return str(t).encode('latin-1', 'replace').decode('latin-1')
+    if pd.isna(t): return ""
+    texto = str(t)
+    # Tradução tática de emojis para o PDF
+    texto = texto.replace('🚨', '(!)').replace('⚠️', '(!)').replace('✅', '(OK)').replace('🛡️', '')
+    # O parâmetro 'ignore' faz com que qualquer emoji não mapeado seja apagado em vez de gerar '??'
+    return texto.encode('latin-1', 'ignore').decode('latin-1')
 
 if FPDF is not None:
     class PDFReport(FPDF):
