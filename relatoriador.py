@@ -392,7 +392,8 @@ if arquivos:
             dados_grafico = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
             dados_grafico = dados_grafico[dados_grafico['VALOR'] > 0]
             
-            dados_tabela = df_filtrado.groupby(['ENTIDADE', 'DATA'])['VALOR'].sum().reset_index().sort_values(by=['ENTIDADE', 'DATA'], ascending=[True, True])
+            # ORDENAÇÃO APLICADA: Data (crescente) seguida por Entidade (alfabética)
+            dados_tabela = df_filtrado.groupby(['ENTIDADE', 'DATA'])['VALOR'].sum().reset_index().sort_values(by=['DATA', 'ENTIDADE'], ascending=[True, True])
             dados_tabela = dados_tabela[dados_tabela['VALOR'] > 0]
             
             dados_tabela['STATUS'] = dados_tabela['DATA'].apply(calcular_status_vencimento)
@@ -496,7 +497,6 @@ if arquivos:
                     cores_tabela = [cor_linhas_normais] * len(tabela_final) + [cor_linha_total]
                     array_cores_fundo = [cores_tabela] * len(cabecalhos)
                     
-                    # CÁLCULO DINÂMICO DOS ALINHAMENTOS PARA O PLOTLY
                     alinhamentos_plotly = []
                     for cab in cabecalhos:
                         if "RAZÃO" in cab or "DESCRIÇÃO" in cab: alinhamentos_plotly.append('left')
