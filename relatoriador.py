@@ -129,7 +129,6 @@ def limpar_texto(t):
 def obter_linhas_reais(pdf, largura, texto):
     if pd.isna(texto) or str(texto).strip() == "": return 1
     texto = str(texto)
-    # FPDF possui uma margem interna nas células (c_margin) de 1mm de cada lado. Usamos 3 para total segurança.
     w_util = largura - 3 
     if w_util <= 0: return 1
     
@@ -171,11 +170,11 @@ if FPDF is not None:
         base_widths = []
         for c in colunas:
             c_up = c.upper()
-            if "RAZÃO" in c_up or "DESCRI" in c_up: base_widths.append(80)
-            elif "DATA" in c_up: base_widths.append(25)
-            elif "DOC" in c_up: base_widths.append(30)
-            elif "NOTA" in c_up or "NF" in c_up: base_widths.append(30)
-            elif "PARC" in c_up: base_widths.append(20)
+            if "RAZÃO" in c_up or "DESCRI" in c_up: base_widths.append(90)
+            elif "DATA" in c_up: base_widths.append(30)
+            elif "DOC" in c_up: base_widths.append(35)
+            elif "NOTA" in c_up or "NF" in c_up: base_widths.append(35)
+            elif "PARC" in c_up: base_widths.append(30)
             elif "VALOR" in c_up: base_widths.append(35)
             elif "SITUA" in c_up: base_widths.append(40)
             else: base_widths.append(30)
@@ -185,10 +184,18 @@ if FPDF is not None:
             
         pdf.set_fill_color(17, 17, 17)
         pdf.set_text_color(255, 255, 255)
-        pdf.set_font("Arial", 'B', 9)
         
+        # CABEÇALHO COM AUTOAJUSTE DE FONTE
         for i, col in enumerate(colunas):
-            pdf.cell(widths[i], 8, limpar_texto(col), border=1, fill=True, align='C')
+            col_text = limpar_texto(col)
+            pdf.set_font("Arial", 'B', 9)
+            font_size = 9.0
+            # Reduz o tamanho da letra se o título for maior que a coluna!
+            while pdf.get_string_width(col_text) > widths[i] - 2 and font_size > 5:
+                font_size -= 0.5
+                pdf.set_font("Arial", 'B', font_size)
+            pdf.cell(widths[i], 8, col_text, border=1, fill=True, align='C')
+            pdf.set_font("Arial", 'B', 9) # Restaura a fonte padrão
         pdf.ln()
         
         line_height = 5
@@ -207,7 +214,6 @@ if FPDF is not None:
             max_linhas = 1
             for i, item in enumerate(row):
                 texto = limpar_texto(item)
-                # O CÉREBRO DA QUEBRA: Conta exatamente as linhas que a coluna vai ocupar
                 linhas = obter_linhas_reais(pdf, widths[i], texto)
                 if linhas > max_linhas:
                     max_linhas = linhas
@@ -218,10 +224,19 @@ if FPDF is not None:
                 pdf.add_page()
                 pdf.set_fill_color(17, 17, 17)
                 pdf.set_text_color(255, 255, 255)
-                pdf.set_font("Arial", 'B', 9)
+                
+                # Repete o cabeçalho com autoajuste na nova página
                 for i, col in enumerate(colunas):
-                    pdf.cell(widths[i], 8, limpar_texto(col), border=1, fill=True, align='C')
+                    col_text = limpar_texto(col)
+                    pdf.set_font("Arial", 'B', 9)
+                    font_size = 9.0
+                    while pdf.get_string_width(col_text) > widths[i] - 2 and font_size > 5:
+                        font_size -= 0.5
+                        pdf.set_font("Arial", 'B', font_size)
+                    pdf.cell(widths[i], 8, col_text, border=1, fill=True, align='C')
+                    pdf.set_font("Arial", 'B', 9)
                 pdf.ln()
+                
                 if is_total:
                     pdf.set_font("Arial", 'B', 9)
                     pdf.set_fill_color(230, 230, 230)
@@ -243,7 +258,6 @@ if FPDF is not None:
                 style = 'DF' if is_total else 'D'
                 pdf.rect(x, y, w, h_linha, style)
                 
-                # CÁLCULO DE CENTRALIZAÇÃO VERTICAL EXATA
                 linhas_deste_texto = obter_linhas_reais(pdf, w, texto)
                 offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
                 
@@ -260,6 +274,76 @@ if FPDF is not None:
                 else: align_h = 'C'
                 
                 pdf.multi_cell(w, line_height, texto, border=0, align=align_h)
+                
+            pdf.set_xy(start_x, start_y + h_linha)
+            
+        res = pdf.output(dest='S')
+        if isinstance(res, str): return res.encode('latin-1')
+        return bytes(res)
+
+    def gerar_pdf_ranking(df, titulo):
+        pdf = PDFReport()
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
+        pdf.ln(5)
+        
+        pdf.set_fill_color(17, 17, 17)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", 'B', 9)
+        widths = [20, 120, 50]
+        colunas = ["POS.", "RAZÃO SOCIAL / DESCRIÇÃO", "VALOR TOTAL"]
+        for i, col in enumerate(colunas):
+            pdf.cell(widths[i], 8, col, border=1, fill=True, align='C')
+        pdf.ln()
+        
+        pdf.set_text_color(26, 28, 30)
+        pdf.set_font("Arial", '', 8)
+        line_height = 5
+        df_ord = df.sort_values(by='VALOR', ascending=False).reset_index(drop=True)
+        
+        for i, row in df_ord.iterrows():
+            pos = f"{i + 1}."
+            nome = limpar_texto(row['ENTIDADE']) 
+            valor = f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            linha_dados = [pos, nome, valor]
+            
+            max_linhas = 1
+            for j, item in enumerate(linha_dados):
+                linhas = obter_linhas_reais(pdf, widths[j], item)
+                if linhas > max_linhas:
+                    max_linhas = linhas
+                    
+            h_linha = (max_linhas * line_height) + 2
+            
+            if pdf.get_y() + h_linha > 275:
+                pdf.add_page()
+                pdf.set_fill_color(17, 17, 17)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_font("Arial", 'B', 9)
+                for j, col in enumerate(colunas):
+                    pdf.cell(widths[j], 8, col, border=1, fill=True, align='C')
+                pdf.ln()
+                pdf.set_text_color(26, 28, 30)
+                pdf.set_font("Arial", '', 8)
+                
+            start_x = pdf.get_x()
+            start_y = pdf.get_y()
+            
+            for j, item in enumerate(linha_dados):
+                w = widths[j]
+                x = start_x + sum(widths[:j])
+                y = start_y
+                
+                pdf.rect(x, y, w, h_linha, 'D')
+                
+                linhas_deste_texto = obter_linhas_reais(pdf, w, item)
+                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
+                
+                pdf.set_xy(x, offset_y)
+                
+                align_h = 'C' if j == 0 else ('L' if j == 1 else 'R')
+                pdf.multi_cell(w, line_height, item, border=0, align=align_h)
                 
             pdf.set_xy(start_x, start_y + h_linha)
             
@@ -298,18 +382,26 @@ if arquivos:
 
     resumos_limpos = []
     for mes, df_mes in todos_os_blocos:
-        prioridades_valor = ['RECEBIDO', 'PAGO', 'VALOR', 'A RECEBER', 'A PAGAR']
         col_v = None
-        for p in prioridades_valor:
-            match = next((c for c in df_mes.columns if p in c), None)
-            if match:
-                col_v = match
-                break
+        cols_valores_possiveis = [c for c in df_mes.columns if c.upper().strip() in ['RECEBIDO', 'A RECEBER']]
+        if len(cols_valores_possiveis) == 2:
+            c1, c2 = cols_valores_possiveis
+            v1_count = df_mes[c1].apply(extrair_valor).apply(lambda x: 1 if x > 0 else 0).sum()
+            v2_count = df_mes[c2].apply(extrair_valor).apply(lambda x: 1 if x > 0 else 0).sum()
+            col_v = c1 if v1_count >= v2_count else c2
+        elif len(cols_valores_possiveis) == 1:
+            col_v = cols_valores_possiveis[0]
+        else:
+            prioridades_valor = ['VALOR', 'PAGO', 'A PAGAR']
+            for p in prioridades_valor:
+                match = next((c for c in df_mes.columns if p in c.upper()), None)
+                if match:
+                    col_v = match
+                    break
                 
-        prioridades_data = ['DATA', 'PREVISÃO', 'VENCIMENTO', 'PAGAMENTO', 'CRÉDITO']
         col_data = None
-        for p in prioridades_data:
-            match = next((c for c in df_mes.columns if p in c), None)
+        for p in ['PREVISÃO', 'VENCIMENTO', 'DATA', 'PAGAMENTO', 'CRÉDITO']:
+            match = next((c for c in df_mes.columns if p in c.upper()), None)
             if match:
                 col_data = match
                 break
@@ -317,7 +409,7 @@ if arquivos:
         prioridades_doc = ['DOCUMENTO', 'DOC', 'FORMA DE PAGAMENTO', 'TIPO', 'MODALIDADE']
         col_doc = None
         for p in prioridades_doc:
-            match = next((c for c in df_mes.columns if p in c), None)
+            match = next((c for c in df_mes.columns if p in c.upper()), None)
             if match:
                 col_doc = match
                 break
@@ -338,12 +430,12 @@ if arquivos:
                 col_parc = match
                 break
         
-        prioridades_nome = ['RAZÃO SOCIAL', 'DESCRIÇÃO', 'FORNECEDOR', 'DEVEDOR', 'CLIENTE']
         col_d = None
+        prioridades_nome = ['RAZÃO SOCIAL', 'CLIENTE', 'DESCRIÇÃO', 'FORNECEDOR', 'DEVEDOR']
         for p in prioridades_nome:
-            match = next((c for c in df_mes.columns if p in c), None)
-            if match:
-                col_d = match
+            matches = [c for c in df_mes.columns if p in c.upper() and 'MINHA EMPRESA' not in c.upper()]
+            if matches:
+                col_d = matches[0]
                 break
         if not col_d: col_d = df_mes.columns[1] if len(df_mes.columns) > 1 else df_mes.columns[0]
         
@@ -352,6 +444,11 @@ if arquivos:
             df_tmp[col_v] = df_tmp[col_v].apply(extrair_valor)
             df_tmp[col_data] = pd.to_datetime(df_tmp[col_data], errors='coerce', dayfirst=True).dt.normalize()
             df_tmp[col_d] = df_tmp[col_d].astype(str).str.upper().str.strip()
+            
+            df_tmp = df_tmp[~df_tmp[col_d].str.contains('JNL IMPORTADORA', na=False)]
+            df_tmp = df_tmp[~df_tmp[col_d].str.contains('01.718.395', na=False)]
+            df_tmp = df_tmp[~df_tmp[col_d].str.contains('MINHA EMPRESA', na=False)]
+            
             df_tmp[col_d] = df_tmp[col_d].replace(r'\s+', ' ', regex=True)
             df_tmp = df_tmp[df_tmp[col_d] != ""]
             df_tmp = df_tmp[df_tmp[col_d] != "NAN"]
@@ -468,12 +565,16 @@ if arquivos:
                 with aba_tab:
                     titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value=titulo_customizado_grafico, key="titulo_tabela_input")
                     
-                    st.write("💡 *Controle as colunas visíveis e baixe em PDF.*")
-                    c_t1, c_t2, c_t3, c_t4 = st.columns(4)
-                    with c_t1: mostrar_documento = st.toggle("Mostrar 'Documento'", value=True)
-                    with c_t2: mostrar_nf = st.toggle("Mostrar 'Nota Fiscal'", value=True)
-                    with c_t3: mostrar_parc = st.toggle("Mostrar 'Parcela'", value=True)
-                    with c_t4: mostrar_situacao = st.toggle("Mostrar 'Situação'", value=True)
+                    # O NOVO MENU INTELIGENTE DE ORDENAÇÃO
+                    colunas_disponiveis = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "VALOR", "SITUAÇÃO"]
+                    colunas_selecionadas = st.multiselect(
+                        "⚙️ Selecione as colunas e a ordem desejada (Clique no X para remover e adicione na ordem que preferir):",
+                        options=colunas_disponiveis,
+                        default=colunas_disponiveis
+                    )
+                    
+                    if not colunas_selecionadas:
+                        colunas_selecionadas = ["RAZÃO SOCIAL / DESCRIÇÃO", "VALOR"] # Failsafe
 
                     tabela_final = dados_tabela.copy()
                     tabela_final['VALOR_STR'] = tabela_final['VALOR'].apply(formatar_contabil)
@@ -481,55 +582,48 @@ if arquivos:
                     soma_total = tabela_final['VALOR'].sum()
                     soma_total_str = formatar_contabil(soma_total)
                     
-                    lista_entidades = tabela_final['ENTIDADE'].tolist() + ["TOTAL GERAL"]
-                    lista_datas = tabela_final['DATA'].tolist() + ["-"]
-                    lista_documentos = tabela_final['DOCUMENTO'].tolist() + ["-"]
-                    lista_nfs = tabela_final['NOTA FISCAL'].tolist() + ["-"]
-                    lista_parcs = tabela_final['PARCELA'].tolist() + ["-"]
-                    lista_valores = tabela_final['VALOR_STR'].tolist() + [soma_total_str]
-                    lista_status = tabela_final['STATUS'].tolist() + ["-"]
-
-                    lista_entidades_visual = tabela_final['ENTIDADE'].tolist() + ["<b>TOTAL GERAL</b>"]
-                    lista_datas_visual = tabela_final['DATA'].tolist() + ["<b>-</b>"]
-                    lista_documentos_visual = tabela_final['DOCUMENTO'].tolist() + ["<b>-</b>"]
-                    lista_nfs_visual = tabela_final['NOTA FISCAL'].tolist() + ["<b>-</b>"]
-                    lista_parcs_visual = tabela_final['PARCELA'].tolist() + ["<b>-</b>"]
-                    lista_valores_visual = tabela_final['VALOR_STR'].tolist() + [f"<b>{soma_total_str}</b>"]
-                    lista_status_visual = tabela_final['STATUS'].tolist() + ["<b>-</b>"]
+                    # MAPAS DE INJEÇÃO DINÂMICA
+                    mapa_pdf = {
+                        "RAZÃO SOCIAL / DESCRIÇÃO": tabela_final['ENTIDADE'].tolist() + ["TOTAL GERAL"],
+                        "DATA": tabela_final['DATA'].tolist() + ["-"],
+                        "DOCUMENTO": tabela_final['DOCUMENTO'].tolist() + ["-"],
+                        "NOTA FISCAL": tabela_final['NOTA FISCAL'].tolist() + ["-"],
+                        "PARCELA": tabela_final['PARCELA'].tolist() + ["-"],
+                        "VALOR": tabela_final['VALOR_STR'].tolist() + [soma_total_str],
+                        "SITUAÇÃO": tabela_final['STATUS'].tolist() + ["-"]
+                    }
                     
-                    cols_pdf = {"RAZÃO SOCIAL / DESCRIÇÃO": lista_entidades, "DATA": lista_datas}
-                    cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>"]
-                    celulas = [lista_entidades_visual, lista_datas_visual]
-                    larguras_colunas = [300, 90]
+                    mapa_visual = {
+                        "RAZÃO SOCIAL / DESCRIÇÃO": tabela_final['ENTIDADE'].tolist() + ["<b>TOTAL GERAL</b>"],
+                        "DATA": tabela_final['DATA'].tolist() + ["<b>-</b>"],
+                        "DOCUMENTO": tabela_final['DOCUMENTO'].tolist() + ["<b>-</b>"],
+                        "NOTA FISCAL": tabela_final['NOTA FISCAL'].tolist() + ["<b>-</b>"],
+                        "PARCELA": tabela_final['PARCELA'].tolist() + ["<b>-</b>"],
+                        "VALOR": tabela_final['VALOR_STR'].tolist() + [f"<b>{soma_total_str}</b>"],
+                        "SITUAÇÃO": tabela_final['STATUS'].tolist() + ["<b>-</b>"]
+                    }
                     
-                    if mostrar_documento:
-                        cols_pdf["DOCUMENTO"] = lista_documentos
-                        cabecalhos.append("<b>DOCUMENTO</b>")
-                        celulas.append(lista_documentos_visual)
-                        larguras_colunas.append(90)
-                        
-                    if mostrar_nf:
-                        cols_pdf["NOTA FISCAL"] = lista_nfs
-                        cabecalhos.append("<b>NOTA FISCAL</b>")
-                        celulas.append(lista_nfs_visual)
-                        larguras_colunas.append(90)
-                        
-                    if mostrar_parc:
-                        cols_pdf["PARCELA"] = lista_parcs
-                        cabecalhos.append("<b>PARCELA</b>")
-                        celulas.append(lista_parcs_visual)
-                        larguras_colunas.append(80)
-                        
-                    cols_pdf["VALOR"] = lista_valores
-                    cabecalhos.append("<b>VALOR</b>")
-                    celulas.append(lista_valores_visual)
-                    larguras_colunas.append(110)
+                    mapa_larguras = {
+                        "RAZÃO SOCIAL / DESCRIÇÃO": 300,
+                        "DATA": 90,
+                        "DOCUMENTO": 90,
+                        "NOTA FISCAL": 90,
+                        "PARCELA": 80,
+                        "VALOR": 110,
+                        "SITUAÇÃO": 120
+                    }
                     
-                    if mostrar_situacao:
-                        cols_pdf["SITUAÇÃO"] = lista_status
-                        cabecalhos.append("<b>SITUAÇÃO</b>")
-                        celulas.append(lista_status_visual)
-                        larguras_colunas.append(120)
+                    cols_pdf = {}
+                    cabecalhos = []
+                    celulas = []
+                    larguras_colunas = []
+                    
+                    # CONSTRÓI A TABELA EXATAMENTE NA ORDEM SELECIONADA
+                    for col in colunas_selecionadas:
+                        cols_pdf[col] = mapa_pdf[col]
+                        cabecalhos.append(f"<b>{col}</b>")
+                        celulas.append(mapa_visual[col])
+                        larguras_colunas.append(mapa_larguras[col])
                         
                     df_pdf = pd.DataFrame(cols_pdf)
 
