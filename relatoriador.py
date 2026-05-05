@@ -86,7 +86,13 @@ def processar_excel_hibrido(df):
             
     if cabecalho is None: return []
 
-    col_data_idx = next((i for i, c in enumerate(cabecalho) if any(k in c for k in ['DATA', 'PREVISÃO', 'VENCIMENTO', 'CRÉDITO'])), None)
+    # PRIORIDADE RÍGIDA DE DATAS (Previsão sempre vence o Vencimento)
+    col_data_idx = None
+    for k in ['PREVISÃO', 'VENCIMENTO', 'DATA', 'CRÉDITO']:
+        idx = next((i for i, c in enumerate(cabecalho) if k in c), None)
+        if idx is not None:
+            col_data_idx = idx
+            break
     
     for _, row in df_dados.iterrows():
         valores_validos = [str(x).upper() for x in row.values if pd.notna(x)]
@@ -118,9 +124,7 @@ def processar_excel_hibrido(df):
 def limpar_texto(t):
     if pd.isna(t): return ""
     texto = str(t)
-    # Tradução tática de emojis para o PDF
     texto = texto.replace('🚨', '(!)').replace('⚠️', '(!)').replace('✅', '(OK)').replace('🛡️', '')
-    # O parâmetro 'ignore' faz com que qualquer emoji não mapeado seja apagado em vez de gerar '??'
     return texto.encode('latin-1', 'ignore').decode('latin-1')
 
 if FPDF is not None:
@@ -139,7 +143,6 @@ if FPDF is not None:
         
         colunas = list(df.columns)
         
-        # Cálculo dinâmico das larguras baseado no que foi selecionado
         base_widths = []
         for c in colunas:
             c_up = c.upper()
@@ -216,7 +219,6 @@ if FPDF is not None:
                 style = 'DF' if is_total else 'D'
                 pdf.rect(x, y, w, h_linha, style)
                 
-                # CÁLCULO DE CENTRALIZAÇÃO VERTICAL
                 w_util = w - 2
                 w_texto = pdf.get_string_width(texto)
                 linhas_deste_texto = math.ceil(w_texto / w_util) if w_util > 0 else 1
@@ -224,7 +226,6 @@ if FPDF is not None:
                 
                 pdf.set_xy(x, offset_y)
                 
-                # ALINHAMENTO HORIZONTAL ESPECÍFICO POR COLUNA
                 col_upper = colunas[i].upper()
                 if "RAZÃO" in col_upper or "RAZAO" in col_upper or "DESCRI" in col_upper: align_h = 'L'
                 elif "DATA" in col_upper: align_h = 'C'
@@ -301,7 +302,6 @@ if FPDF is not None:
                 
                 pdf.rect(x, y, w, h_linha, 'D')
                 
-                # CÁLCULO DE CENTRALIZAÇÃO VERTICAL
                 w_util = w - 2
                 w_texto = pdf.get_string_width(item)
                 linhas_deste_texto = math.ceil(w_texto / w_util) if w_util > 0 else 1
@@ -309,7 +309,6 @@ if FPDF is not None:
                 
                 pdf.set_xy(x, offset_y)
                 
-                # ALINHAMENTO HORIZONTAL ESPECÍFICO POR COLUNA NO RANKING
                 align_h = 'C' if j == 0 else ('L' if j == 1 else 'R')
                 pdf.multi_cell(w, line_height, item, border=0, align=align_h)
                 
@@ -350,18 +349,28 @@ if arquivos:
 
     resumos_limpos = []
     for mes, df_mes in todos_os_blocos:
-        prioridades_valor = ['RECEBIDO', 'PAGO', 'VALOR', 'A RECEBER', 'A PAGAR']
+        # 1. DUELO DE COLUNAS DE VALOR (Recebido vs A Receber)
         col_v = None
-        for p in prioridades_valor:
-            match = next((c for c in df_mes.columns if p in c), None)
-            if match:
-                col_v = match
-                break
+        cols_valores_possiveis = [c for c in df_mes.columns if c.upper().strip() in ['RECEBIDO', 'A RECEBER']]
+        if len(cols_valores_possiveis) == 2:
+            c1, c2 = cols_valores_possiveis
+            v1_count = df_mes[c1].apply(extrair_valor).apply(lambda x: 1 if x > 0 else 0).sum()
+            v2_count = df_mes[c2].apply(extrair_valor).apply(lambda x: 1 if x > 0 else 0).sum()
+            col_v = c1 if v1_count >= v2_count else c2
+        elif len(cols_valores_possiveis) == 1:
+            col_v = cols_valores_possiveis[0]
+        else:
+            prioridades_valor = ['VALOR', 'PAGO', 'A PAGAR']
+            for p in prioridades_valor:
+                match = next((c for c in df_mes.columns if p in c.upper()), None)
+                if match:
+                    col_v = match
+                    break
                 
-        prioridades_data = ['DATA', 'PREVISÃO', 'VENCIMENTO', 'PAGAMENTO', 'CRÉDITO']
+        # 2. PRIORIDADE DE DATAS (Previsão sempre em primeiro)
         col_data = None
-        for p in prioridades_data:
-            match = next((c for c in df_mes.columns if p in c), None)
+        for p in ['PREVISÃO', 'VENCIMENTO', 'DATA', 'PAGAMENTO', 'CRÉDITO']:
+            match = next((c for c in df_mes.columns if p in c.upper()), None)
             if match:
                 col_data = match
                 break
@@ -369,7 +378,7 @@ if arquivos:
         prioridades_doc = ['DOCUMENTO', 'DOC', 'FORMA DE PAGAMENTO', 'TIPO', 'MODALIDADE']
         col_doc = None
         for p in prioridades_doc:
-            match = next((c for c in df_mes.columns if p in c), None)
+            match = next((c for c in df_mes.columns if p in c.upper()), None)
             if match:
                 col_doc = match
                 break
@@ -390,12 +399,13 @@ if arquivos:
                 col_parc = match
                 break
         
-        prioridades_nome = ['RAZÃO SOCIAL', 'DESCRIÇÃO', 'FORNECEDOR', 'DEVEDOR', 'CLIENTE']
+        # 3. ENTIDADE / NOME DO CLIENTE (Ignorando cabeçalhos de "Minha Empresa")
         col_d = None
+        prioridades_nome = ['RAZÃO SOCIAL', 'CLIENTE', 'DESCRIÇÃO', 'FORNECEDOR', 'DEVEDOR']
         for p in prioridades_nome:
-            match = next((c for c in df_mes.columns if p in c), None)
-            if match:
-                col_d = match
+            matches = [c for c in df_mes.columns if p in c.upper() and 'MINHA EMPRESA' not in c.upper()]
+            if matches:
+                col_d = matches[0]
                 break
         if not col_d: col_d = df_mes.columns[1] if len(df_mes.columns) > 1 else df_mes.columns[0]
         
@@ -404,6 +414,12 @@ if arquivos:
             df_tmp[col_v] = df_tmp[col_v].apply(extrair_valor)
             df_tmp[col_data] = pd.to_datetime(df_tmp[col_data], errors='coerce', dayfirst=True).dt.normalize()
             df_tmp[col_d] = df_tmp[col_d].astype(str).str.upper().str.strip()
+            
+            # BLINDAGEM CONTRA A PRÓPRIA EMPRESA (Filtro JNL)
+            df_tmp = df_tmp[~df_tmp[col_d].str.contains('JNL IMPORTADORA', na=False)]
+            df_tmp = df_tmp[~df_tmp[col_d].str.contains('01.718.395', na=False)]
+            df_tmp = df_tmp[~df_tmp[col_d].str.contains('MINHA EMPRESA', na=False)]
+            
             df_tmp[col_d] = df_tmp[col_d].replace(r'\s+', ' ', regex=True)
             df_tmp = df_tmp[df_tmp[col_d] != ""]
             df_tmp = df_tmp[df_tmp[col_d] != "NAN"]
@@ -456,7 +472,6 @@ if arquivos:
             dados_grafico = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
             dados_grafico = dados_grafico[dados_grafico['VALOR'] > 0]
             
-            # ORDENAÇÃO APLICADA: Preservando os detalhes na agregação
             dados_tabela = df_filtrado.groupby(['ENTIDADE', 'DATA', 'DOCUMENTO', 'NOTA FISCAL', 'PARCELA'])['VALOR'].sum().reset_index().sort_values(by=['DATA', 'ENTIDADE'], ascending=[True, True])
             dados_tabela = dados_tabela[dados_tabela['VALOR'] > 0]
             
@@ -518,7 +533,6 @@ if arquivos:
                     titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value=titulo_customizado_grafico)
                     
                     st.write("💡 *Controle as colunas visíveis e baixe em PDF.*")
-                    # Interruptores de Colunas Opcionais em linha
                     c_t1, c_t2, c_t3, c_t4 = st.columns(4)
                     with c_t1: mostrar_documento = st.toggle("Mostrar 'Documento'", value=True)
                     with c_t2: mostrar_nf = st.toggle("Mostrar 'Nota Fiscal'", value=True)
@@ -547,7 +561,6 @@ if arquivos:
                     lista_valores_visual = tabela_final['VALOR_STR'].tolist() + [f"<b>{soma_total_str}</b>"]
                     lista_status_visual = tabela_final['STATUS'].tolist() + ["<b>-</b>"]
                     
-                    # Criação Dinâmica do DataFrame do PDF e Plotly
                     cols_pdf = {"RAZÃO SOCIAL / DESCRIÇÃO": lista_entidades, "DATA": lista_datas}
                     cabecalhos = ["<b>RAZÃO SOCIAL / DESCRIÇÃO</b>", "<b>DATA</b>"]
                     celulas = [lista_entidades_visual, lista_datas_visual]
