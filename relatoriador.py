@@ -86,13 +86,7 @@ def processar_excel_hibrido(df):
             
     if cabecalho is None: return []
 
-    # PRIORIDADE RÍGIDA DE DATAS (Previsão sempre vence o Vencimento)
-    col_data_idx = None
-    for k in ['PREVISÃO', 'VENCIMENTO', 'DATA', 'CRÉDITO']:
-        idx = next((i for i, c in enumerate(cabecalho) if k in c), None)
-        if idx is not None:
-            col_data_idx = idx
-            break
+    col_data_idx = next((i for i, c in enumerate(cabecalho) if any(k in c for k in ['DATA', 'PREVISÃO', 'VENCIMENTO', 'CRÉDITO'])), None)
     
     for _, row in df_dados.iterrows():
         valores_validos = [str(x).upper() for x in row.values if pd.notna(x)]
@@ -126,6 +120,34 @@ def limpar_texto(t):
     texto = str(t)
     texto = texto.replace('🚨', '(!)').replace('⚠️', '(!)').replace('✅', '(OK)').replace('🛡️', '')
     return texto.encode('latin-1', 'ignore').decode('latin-1')
+
+# MOTOR FALSO DE IMPRESSÃO - Calcula quebras reais de linha do FPDF
+def obter_linhas_reais(pdf, largura, texto):
+    if pd.isna(texto) or str(texto).strip() == "": return 1
+    texto = str(texto)
+    # FPDF possui uma margem interna nas células (c_margin) de 1mm de cada lado. Usamos 3 para total segurança.
+    w_util = largura - 3 
+    if w_util <= 0: return 1
+    
+    linhas = 0
+    for paragrafo in texto.split('\n'):
+        palavras = paragrafo.split(' ')
+        linha_atual = ""
+        linhas_neste_paragrafo = 1
+        for p in palavras:
+            teste_linha = p if not linha_atual else linha_atual + " " + p
+            if pdf.get_string_width(teste_linha) > w_util:
+                if linha_atual == "": 
+                    # Se a palavra for maior que a coluna
+                    linhas_neste_paragrafo += max(1, math.ceil(pdf.get_string_width(p) / w_util)) - 1
+                    linha_atual = p
+                else:
+                    linhas_neste_paragrafo += 1
+                    linha_atual = p
+            else:
+                linha_atual = teste_linha
+        linhas += linhas_neste_paragrafo
+    return max(1, linhas)
 
 if FPDF is not None:
     class PDFReport(FPDF):
@@ -182,9 +204,8 @@ if FPDF is not None:
             max_linhas = 1
             for i, item in enumerate(row):
                 texto = limpar_texto(item)
-                w_util = widths[i] - 2
-                w_texto = pdf.get_string_width(texto)
-                linhas = math.ceil(w_texto / w_util) if w_util > 0 else 1
+                # O CÉREBRO DA QUEBRA: Conta exatamente as linhas que a coluna vai ocupar
+                linhas = obter_linhas_reais(pdf, widths[i], texto)
                 if linhas > max_linhas:
                     max_linhas = linhas
                     
@@ -219,9 +240,8 @@ if FPDF is not None:
                 style = 'DF' if is_total else 'D'
                 pdf.rect(x, y, w, h_linha, style)
                 
-                w_util = w - 2
-                w_texto = pdf.get_string_width(texto)
-                linhas_deste_texto = math.ceil(w_texto / w_util) if w_util > 0 else 1
+                # CÁLCULO DE CENTRALIZAÇÃO VERTICAL EXATA
+                linhas_deste_texto = obter_linhas_reais(pdf, w, texto)
                 offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
                 
                 pdf.set_xy(x, offset_y)
@@ -273,9 +293,7 @@ if FPDF is not None:
             
             max_linhas = 1
             for j, item in enumerate(linha_dados):
-                w_util = widths[j] - 2
-                w_texto = pdf.get_string_width(item)
-                linhas = math.ceil(w_texto / w_util) if w_util > 0 else 1
+                linhas = obter_linhas_reais(pdf, widths[j], item)
                 if linhas > max_linhas:
                     max_linhas = linhas
                     
@@ -302,9 +320,7 @@ if FPDF is not None:
                 
                 pdf.rect(x, y, w, h_linha, 'D')
                 
-                w_util = w - 2
-                w_texto = pdf.get_string_width(item)
-                linhas_deste_texto = math.ceil(w_texto / w_util) if w_util > 0 else 1
+                linhas_deste_texto = obter_linhas_reais(pdf, w, item)
                 offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
                 
                 pdf.set_xy(x, offset_y)
@@ -349,28 +365,18 @@ if arquivos:
 
     resumos_limpos = []
     for mes, df_mes in todos_os_blocos:
-        # 1. DUELO DE COLUNAS DE VALOR (Recebido vs A Receber)
+        prioridades_valor = ['RECEBIDO', 'PAGO', 'VALOR', 'A RECEBER', 'A PAGAR']
         col_v = None
-        cols_valores_possiveis = [c for c in df_mes.columns if c.upper().strip() in ['RECEBIDO', 'A RECEBER']]
-        if len(cols_valores_possiveis) == 2:
-            c1, c2 = cols_valores_possiveis
-            v1_count = df_mes[c1].apply(extrair_valor).apply(lambda x: 1 if x > 0 else 0).sum()
-            v2_count = df_mes[c2].apply(extrair_valor).apply(lambda x: 1 if x > 0 else 0).sum()
-            col_v = c1 if v1_count >= v2_count else c2
-        elif len(cols_valores_possiveis) == 1:
-            col_v = cols_valores_possiveis[0]
-        else:
-            prioridades_valor = ['VALOR', 'PAGO', 'A PAGAR']
-            for p in prioridades_valor:
-                match = next((c for c in df_mes.columns if p in c.upper()), None)
-                if match:
-                    col_v = match
-                    break
+        for p in prioridades_valor:
+            match = next((c for c in df_mes.columns if p in c), None)
+            if match:
+                col_v = match
+                break
                 
-        # 2. PRIORIDADE DE DATAS (Previsão sempre em primeiro)
+        prioridades_data = ['DATA', 'PREVISÃO', 'VENCIMENTO', 'PAGAMENTO', 'CRÉDITO']
         col_data = None
-        for p in ['PREVISÃO', 'VENCIMENTO', 'DATA', 'PAGAMENTO', 'CRÉDITO']:
-            match = next((c for c in df_mes.columns if p in c.upper()), None)
+        for p in prioridades_data:
+            match = next((c for c in df_mes.columns if p in c), None)
             if match:
                 col_data = match
                 break
@@ -378,7 +384,7 @@ if arquivos:
         prioridades_doc = ['DOCUMENTO', 'DOC', 'FORMA DE PAGAMENTO', 'TIPO', 'MODALIDADE']
         col_doc = None
         for p in prioridades_doc:
-            match = next((c for c in df_mes.columns if p in c.upper()), None)
+            match = next((c for c in df_mes.columns if p in c), None)
             if match:
                 col_doc = match
                 break
@@ -399,13 +405,12 @@ if arquivos:
                 col_parc = match
                 break
         
-        # 3. ENTIDADE / NOME DO CLIENTE (Ignorando cabeçalhos de "Minha Empresa")
+        prioridades_nome = ['RAZÃO SOCIAL', 'DESCRIÇÃO', 'FORNECEDOR', 'DEVEDOR', 'CLIENTE']
         col_d = None
-        prioridades_nome = ['RAZÃO SOCIAL', 'CLIENTE', 'DESCRIÇÃO', 'FORNECEDOR', 'DEVEDOR']
         for p in prioridades_nome:
-            matches = [c for c in df_mes.columns if p in c.upper() and 'MINHA EMPRESA' not in c.upper()]
-            if matches:
-                col_d = matches[0]
+            match = next((c for c in df_mes.columns if p in c), None)
+            if match:
+                col_d = match
                 break
         if not col_d: col_d = df_mes.columns[1] if len(df_mes.columns) > 1 else df_mes.columns[0]
         
@@ -414,12 +419,6 @@ if arquivos:
             df_tmp[col_v] = df_tmp[col_v].apply(extrair_valor)
             df_tmp[col_data] = pd.to_datetime(df_tmp[col_data], errors='coerce', dayfirst=True).dt.normalize()
             df_tmp[col_d] = df_tmp[col_d].astype(str).str.upper().str.strip()
-            
-            # BLINDAGEM CONTRA A PRÓPRIA EMPRESA (Filtro JNL)
-            df_tmp = df_tmp[~df_tmp[col_d].str.contains('JNL IMPORTADORA', na=False)]
-            df_tmp = df_tmp[~df_tmp[col_d].str.contains('01.718.395', na=False)]
-            df_tmp = df_tmp[~df_tmp[col_d].str.contains('MINHA EMPRESA', na=False)]
-            
             df_tmp[col_d] = df_tmp[col_d].replace(r'\s+', ' ', regex=True)
             df_tmp = df_tmp[df_tmp[col_d] != ""]
             df_tmp = df_tmp[df_tmp[col_d] != "NAN"]
