@@ -242,80 +242,6 @@ if FPDF is not None:
         if isinstance(res, str): return res.encode('latin-1')
         return bytes(res)
 
-    def gerar_pdf_ranking(df, titulo):
-        pdf = PDFReport()
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
-        pdf.ln(5)
-        
-        pdf.set_fill_color(17, 17, 17)
-        pdf.set_text_color(255, 255, 255)
-        pdf.set_font("Arial", 'B', 9)
-        widths = [20, 120, 50]
-        colunas = ["POS.", "RAZÃO SOCIAL / DESCRIÇÃO", "VALOR TOTAL"]
-        for i, col in enumerate(colunas):
-            pdf.cell(widths[i], 8, col, border=1, fill=True, align='C')
-        pdf.ln()
-        
-        pdf.set_text_color(26, 28, 30)
-        pdf.set_font("Arial", '', 8)
-        line_height = 5
-        df_ord = df.sort_values(by='VALOR', ascending=False).reset_index(drop=True)
-        
-        for i, row in df_ord.iterrows():
-            pos = f"{i + 1}."
-            nome = limpar_texto(row['ENTIDADE']) 
-            valor = f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            linha_dados = [pos, nome, valor]
-            
-            max_linhas = 1
-            for j, item in enumerate(linha_dados):
-                w_util = widths[j] - 2
-                w_texto = pdf.get_string_width(item)
-                linhas = math.ceil(w_texto / w_util) if w_util > 0 else 1
-                if linhas > max_linhas:
-                    max_linhas = linhas
-                    
-            h_linha = (max_linhas * line_height) + 2
-            
-            if pdf.get_y() + h_linha > 275:
-                pdf.add_page()
-                pdf.set_fill_color(17, 17, 17)
-                pdf.set_text_color(255, 255, 255)
-                pdf.set_font("Arial", 'B', 9)
-                for j, col in enumerate(colunas):
-                    pdf.cell(widths[j], 8, col, border=1, fill=True, align='C')
-                pdf.ln()
-                pdf.set_text_color(26, 28, 30)
-                pdf.set_font("Arial", '', 8)
-                
-            start_x = pdf.get_x()
-            start_y = pdf.get_y()
-            
-            for j, item in enumerate(linha_dados):
-                w = widths[j]
-                x = start_x + sum(widths[:j])
-                y = start_y
-                
-                pdf.rect(x, y, w, h_linha, 'D')
-                
-                w_util = w - 2
-                w_texto = pdf.get_string_width(item)
-                linhas_deste_texto = math.ceil(w_texto / w_util) if w_util > 0 else 1
-                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
-                
-                pdf.set_xy(x, offset_y)
-                
-                align_h = 'C' if j == 0 else ('L' if j == 1 else 'R')
-                pdf.multi_cell(w, line_height, item, border=0, align=align_h)
-                
-            pdf.set_xy(start_x, start_y + h_linha)
-            
-        res = pdf.output(dest='S')
-        if isinstance(res, str): return res.encode('latin-1')
-        return bytes(res)
-
 # --- INTERFACE SIDEBAR ---
 with st.sidebar:
     st.title("🛡️ RELATORIADOR")
@@ -486,15 +412,9 @@ if arquivos:
                 aba_visu, aba_tab = st.tabs(["📊 Gráfico", "📋 Tabela Detalhada"])
 
                 with aba_visu:
-                    titulo_customizado_grafico = st.text_input("📝 Título Customizado (Ranking):", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
+                    titulo_customizado_grafico = st.text_input("📝 Título Customizado (Gráfico):", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
                     
-                    col_g1, col_g2 = st.columns([2, 2])
-                    with col_g1:
-                        st.write("💡 *Use o ícone 📷 no canto direito do gráfico para baixar a foto das barras.*")
-                    with col_g2:
-                        if FPDF is not None:
-                            pdf_ranking_bytes = gerar_pdf_ranking(dados_grafico, titulo_customizado_grafico)
-                            st.download_button(label="📄 Baixar Ranking em PDF", data=pdf_ranking_bytes, file_name=f"Ranking_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True, key="btn_pdf_ranking")
+                    st.write("💡 *Use o ícone 📷 no canto superior direito do gráfico abaixo para baixar a imagem (JPG fundo branco).*")
                     
                     dados_completos = dados_grafico.sort_values(by='VALOR', ascending=True)
                     dados_barras_formatados = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
@@ -504,7 +424,17 @@ if arquivos:
                     bar_options = {
                         "backgroundColor": "transparent",
                         "title": {"text": titulo_customizado_grafico, "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Calibri"}},
-                        "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar Foto", "pixelRatio": 2}}},
+                        "toolbox": {
+                            "feature": {
+                                "saveAsImage": {
+                                    "show": True, 
+                                    "title": "Baixar JPG", 
+                                    "type": "jpeg", 
+                                    "backgroundColor": "#FFFFFF", 
+                                    "pixelRatio": 2
+                                }
+                            }
+                        },
                         "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
                         "grid": {"top": 80, "left": "1%", "right": "15%", "bottom": "1%", "containLabel": True},
                         "xAxis": {"type": "value", "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}},
