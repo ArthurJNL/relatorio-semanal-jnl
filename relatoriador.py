@@ -283,6 +283,76 @@ if FPDF is not None:
                 
             pdf.set_xy(start_x, start_y + h_linha)
 
+    def append_pdf_ranking(pdf, df, titulo):
+        pdf.add_page()
+        if titulo:
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
+            pdf.ln(5)
+        
+        pdf.set_fill_color(17, 17, 17)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", 'B', 9)
+        widths = [20, 120, 50]
+        
+        df_ord = df.copy() 
+        col_nome_dinamico = str(df_ord.columns[0]).upper()
+        col_valor_dinamico = df_ord.columns[1]
+        
+        colunas = ["POS.", col_nome_dinamico, "VALOR TOTAL"]
+        for i, col in enumerate(colunas):
+            pdf.cell(widths[i], 8, limpar_texto(col), border=1, fill=True, align='C')
+        pdf.ln()
+        
+        pdf.set_text_color(26, 28, 30)
+        pdf.set_font("Arial", '', 8)
+        line_height = 5
+        
+        for i, row in df_ord.iterrows():
+            pos = f"{i + 1}."
+            nome = limpar_texto(row[df_ord.columns[0]]) 
+            valor = f"R$ {row[col_valor_dinamico]:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            linha_dados = [pos, nome, valor]
+            
+            max_linhas = 1
+            for j, item in enumerate(linha_dados):
+                linhas = obter_linhas_reais(pdf, widths[j], item)
+                if linhas > max_linhas:
+                    max_linhas = linhas
+                    
+            h_linha = (max_linhas * line_height) + 2
+            
+            if pdf.get_y() + h_linha > 275:
+                pdf.add_page()
+                pdf.set_fill_color(17, 17, 17)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_font("Arial", 'B', 9)
+                for j, col in enumerate(colunas):
+                    pdf.cell(widths[j], 8, limpar_texto(col), border=1, fill=True, align='C')
+                pdf.ln()
+                pdf.set_text_color(26, 28, 30)
+                pdf.set_font("Arial", '', 8)
+                
+            start_x = pdf.get_x()
+            start_y = pdf.get_y()
+            
+            for j, item in enumerate(linha_dados):
+                w = widths[j]
+                x = start_x + sum(widths[:j])
+                y = start_y
+                
+                pdf.rect(x, y, w, h_linha, 'D')
+                
+                linhas_deste_texto = obter_linhas_reais(pdf, w, item)
+                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
+                
+                pdf.set_xy(x, offset_y)
+                
+                align_h = 'C' if j == 0 else ('L' if j == 1 else 'R')
+                pdf.multi_cell(w, line_height, item, border=0, align=align_h)
+                
+            pdf.set_xy(start_x, start_y + h_linha)
+
     def append_pdf_grafico_imagem(pdf, df, titulo, col_nome, col_valor):
         pdf.add_page()
         if titulo:
@@ -294,7 +364,7 @@ if FPDF is not None:
             df_plot = df.sort_values(by=col_valor, ascending=True).tail(25)
             fig, ax = plt.subplots(figsize=(10, max(5, len(df_plot) * 0.4)))
             
-            nomes_limpos = df_plot[col_nome].astype(str).apply(lambda x: (x[:40] + '...') if len(x) > 40 else x)
+            nomes_limpos = df_plot[col_nome].astype(str).apply(lambda x: (x[:35] + '...') if len(x) > 35 else x)
             ax.barh(nomes_limpos, df_plot[col_valor], color='#111111', height=0.6)
             
             for spine in ['top', 'right', 'bottom']: ax.spines[spine].set_visible(False)
@@ -302,12 +372,10 @@ if FPDF is not None:
             ax.tick_params(axis='y', length=0, labelsize=9)
             
             max_val = df_plot[col_valor].max()
-            # O PULO DO GATO: Adicionar 25% de margem no eixo X para o texto não sair da tela!
             ax.set_xlim(0, max_val * 1.25)
             
             for index, value in enumerate(df_plot[col_valor]):
                 val_str = f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                # O texto agora tem espaço de sobra à direita da barra
                 ax.text(value + (max_val * 0.02), index, val_str, va='center', fontsize=9, fontweight='bold', color='#111111')
                 
             plt.tight_layout()
@@ -494,7 +562,6 @@ if arquivos:
             comando_filtro = st.text_input("💬 Filtro de pesquisa...", placeholder="Ex: IMPORPECAS, KS MAQUINAS...")
             if comando_filtro: df_filtrado = df_filtrado[df_filtrado['ENTIDADE'].str.contains(comando_filtro.strip().upper(), case=False, na=False)]
 
-            # PREPARAÇÃO DOS DADOS DOS GRÁFICOS
             dados_grafico_ent = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
             dados_grafico_ent = dados_grafico_ent[dados_grafico_ent['VALOR'] > 0]
             
@@ -543,7 +610,7 @@ if arquivos:
                     tipo_grafico = st.radio("📊 Escolha o modelo do Gráfico:", ["Por Entidade (Padrão)", "Categorizado (Por Tipo de Pagamento)", "Por Categoria de Despesa"], horizontal=True)
                     
                     if tipo_grafico == "Por Entidade (Padrão)":
-                        dados_completos = dados_grafico_ent.sort_values(by='VALOR', ascending=True).tail(25) # Limita a exibição visual para não quebrar a tela com centenas
+                        dados_completos = dados_grafico_ent.sort_values(by='VALOR', ascending=True).tail(25) 
                         dados_barras_formatados = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
                         altura_dinamica = max(600, len(dados_completos) * 50) 
                         bar_options = {
@@ -597,19 +664,24 @@ if arquivos:
 
                 with aba_tab:
                     titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value=titulo_customizado_grafico, key="titulo_tabela_input")
-                    st.write("💡 *Controle as colunas: Arraste para a caixa superior para incluir/ordenar, arraste para a inferior para remover da tela.*")
+                    st.write("💡 *Controle as colunas: Arraste para cima para incluir/ordenar, arraste para baixo para excluir.*")
                     
                     col_ativas_padrao = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "VALOR", "SITUAÇÃO"]
                     col_ocultas_padrao = ["DESPESA"]
                     
                     if sort_items is not None:
-                        sort_data_colunas = [
-                            {'header': '✅ COLUNAS NO PDF E NA TELA (Arraste para ordenar)', 'items': col_ativas_padrao},
-                            {'header': '❌ COLUNAS OCULTAS (Arraste para cá para remover)', 'items': col_ocultas_padrao}
-                        ]
+                        # CAIXA FORTE DA SESSÃO PARA A TABELA (Prevenindo Error 185)
+                        if "estado_colunas" not in st.session_state:
+                            st.session_state["estado_colunas"] = [
+                                {'header': '✅ COLUNAS NA TELA E NO PDF (Arraste p/ ordenar)', 'items': col_ativas_padrao},
+                                {'header': '❌ LIXEIRA (Arraste p/ cá para remover)', 'items': col_ocultas_padrao}
+                            ]
                         
-                        res_sort_colunas = sort_items(sort_data_colunas, multi_containers=True, direction='horizontal', key="ordenador_colunas")
-                        colunas_selecionadas = res_sort_colunas[0]['items'] if res_sort_colunas else col_ativas_padrao
+                        res_sort_colunas = sort_items(st.session_state["estado_colunas"], multi_containers=True, direction='vertical', key="ordenador_colunas")
+                        if res_sort_colunas:
+                            st.session_state["estado_colunas"] = res_sort_colunas
+                            
+                        colunas_selecionadas = st.session_state["estado_colunas"][0]['items']
                     else:
                         st.info("⚠️ Instale 'streamlit-sortables' no terminal para ativar o modo arrastar e soltar.")
                         colunas_selecionadas = col_ativas_padrao
@@ -694,7 +766,7 @@ if arquivos:
                     st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
 
                 with aba_rel:
-                    st.write("⚙️ **Monte o seu Relatório Completo:** Arraste as páginas para a caixa de cima para incluir no PDF.")
+                    st.write("⚙️ **Monte o seu Relatório Completo:** Arraste as páginas para a caixa superior para incluir no PDF.")
                     
                     opcoes_relatorio = [
                         "Gráfico: Por Entidade (Padrão)",
@@ -704,14 +776,20 @@ if arquivos:
                     ]
                     
                     if sort_items is not None:
-                        sort_data_rel = [
-                            {'header': '✅ INCLUIR NO PDF (Arraste para ordenar)', 'items': opcoes_relatorio},
-                            {'header': '❌ NÃO INCLUIR', 'items': []}
-                        ]
-                        res_rel = sort_items(sort_data_rel, multi_containers=True, direction='horizontal', key="ordem_rel_pdf")
-                        ordem_relatorio = res_rel[0]['items'] if res_rel else opcoes_relatorio
+                        # CAIXA FORTE DA SESSÃO PARA O RELATÓRIO (Prevenindo Error 185)
+                        if "estado_relatorio" not in st.session_state:
+                            st.session_state["estado_relatorio"] = [
+                                {'header': '✅ INCLUIR NO PDF (Arraste p/ ordenar)', 'items': opcoes_relatorio},
+                                {'header': '❌ LIXEIRA (Arraste p/ cá para remover)', 'items': []}
+                            ]
+                        
+                        res_rel = sort_items(st.session_state["estado_relatorio"], multi_containers=True, direction='vertical', key="ordem_rel_pdf")
+                        if res_rel:
+                            st.session_state["estado_relatorio"] = res_rel
+                            
+                        ordem_relatorio = st.session_state["estado_relatorio"][0]['items']
                     else:
-                        st.info("⚠️ Instale 'streamlit-sortables' no terminal.")
+                        st.info("⚠️ Instale 'streamlit-sortables' no terminal para ativar o arrastar e soltar.")
                         ordem_relatorio = opcoes_relatorio
                         
                     if ordem_relatorio:
@@ -740,7 +818,7 @@ if arquivos:
                         else:
                             st.error("⚠️ Biblioteca 'fpdf' não instalada.")
                     else:
-                        st.info("⚠️ Arraste pelo menos um item para a caixa de 'INCLUIR NO PDF' para gerar o relatório.")
+                        st.info("⚠️ Arraste pelo menos um item para a caixa superior para gerar o relatório.")
                             
             else: st.info("Todos os valores encontrados estão zerados no período selecionado.")
         else: st.warning("⚠️ Nenhuma data válida encontrada no ficheiro. Verifique a coluna de datas.")
