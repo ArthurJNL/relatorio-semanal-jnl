@@ -4,6 +4,7 @@ from streamlit_echarts import st_echarts
 import plotly.graph_objects as go
 from datetime import datetime
 import math
+import unicodedata
 
 # --- MOTORES EXTERNOS ---
 try:
@@ -125,6 +126,9 @@ def limpar_texto(t):
     texto = texto.replace('🚨', '(!)').replace('⚠️', '(!)').replace('✅', '(OK)').replace('🛡️', '')
     return texto.encode('latin-1', 'ignore').decode('latin-1')
 
+def remover_acentos(texto):
+    return unicodedata.normalize('NFKD', str(texto)).encode('ASCII', 'ignore').decode('utf-8').upper()
+
 # MOTOR FALSO DE IMPRESSÃO - Calcula quebras reais de linha do FPDF
 def obter_linhas_reais(pdf, largura, texto):
     if pd.isna(texto) or str(texto).strip() == "": return 1
@@ -175,6 +179,7 @@ if FPDF is not None:
             elif "DOC" in c_up: base_widths.append(35)
             elif "NOTA" in c_up or "NF" in c_up: base_widths.append(35)
             elif "PARC" in c_up: base_widths.append(30)
+            elif "DESPESA" in c_up: base_widths.append(40) # Alargamento para Despesas
             elif "VALOR" in c_up: base_widths.append(35)
             elif "SITUA" in c_up: base_widths.append(40)
             else: base_widths.append(30)
@@ -190,12 +195,11 @@ if FPDF is not None:
             col_text = limpar_texto(col)
             pdf.set_font("Arial", 'B', 9)
             font_size = 9.0
-            # Reduz o tamanho da letra se o título for maior que a coluna!
             while pdf.get_string_width(col_text) > widths[i] - 2 and font_size > 5:
                 font_size -= 0.5
                 pdf.set_font("Arial", 'B', font_size)
             pdf.cell(widths[i], 8, col_text, border=1, fill=True, align='C')
-            pdf.set_font("Arial", 'B', 9) # Restaura a fonte padrão
+            pdf.set_font("Arial", 'B', 9)
         pdf.ln()
         
         line_height = 5
@@ -225,7 +229,6 @@ if FPDF is not None:
                 pdf.set_fill_color(17, 17, 17)
                 pdf.set_text_color(255, 255, 255)
                 
-                # Repete o cabeçalho com autoajuste na nova página
                 for i, col in enumerate(colunas):
                     col_text = limpar_texto(col)
                     pdf.set_font("Arial", 'B', 9)
@@ -264,86 +267,17 @@ if FPDF is not None:
                 pdf.set_xy(x, offset_y)
                 
                 col_upper = colunas[i].upper()
-                if "RAZÃO" in col_upper or "RAZAO" in col_upper or "DESCRI" in col_upper: align_h = 'L'
+                if "RAZÃO" in col_upper or "DESCRI" in col_upper: align_h = 'L'
                 elif "DATA" in col_upper: align_h = 'C'
                 elif "DOC" in col_upper: align_h = 'C'
                 elif "NOTA" in col_upper or "NF" in col_upper: align_h = 'C'
                 elif "PARC" in col_upper: align_h = 'C'
+                elif "DESPESA" in col_upper: align_h = 'C'
                 elif "VALOR" in col_upper: align_h = 'R'
                 elif "SITUA" in col_upper: align_h = 'C'
                 else: align_h = 'C'
                 
                 pdf.multi_cell(w, line_height, texto, border=0, align=align_h)
-                
-            pdf.set_xy(start_x, start_y + h_linha)
-            
-        res = pdf.output(dest='S')
-        if isinstance(res, str): return res.encode('latin-1')
-        return bytes(res)
-
-    def gerar_pdf_ranking(df, titulo):
-        pdf = PDFReport()
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
-        pdf.ln(5)
-        
-        pdf.set_fill_color(17, 17, 17)
-        pdf.set_text_color(255, 255, 255)
-        pdf.set_font("Arial", 'B', 9)
-        widths = [20, 120, 50]
-        colunas = ["POS.", "RAZÃO SOCIAL / DESCRIÇÃO", "VALOR TOTAL"]
-        for i, col in enumerate(colunas):
-            pdf.cell(widths[i], 8, col, border=1, fill=True, align='C')
-        pdf.ln()
-        
-        pdf.set_text_color(26, 28, 30)
-        pdf.set_font("Arial", '', 8)
-        line_height = 5
-        df_ord = df.sort_values(by='VALOR', ascending=False).reset_index(drop=True)
-        
-        for i, row in df_ord.iterrows():
-            pos = f"{i + 1}."
-            nome = limpar_texto(row['ENTIDADE']) 
-            valor = f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            linha_dados = [pos, nome, valor]
-            
-            max_linhas = 1
-            for j, item in enumerate(linha_dados):
-                linhas = obter_linhas_reais(pdf, widths[j], item)
-                if linhas > max_linhas:
-                    max_linhas = linhas
-                    
-            h_linha = (max_linhas * line_height) + 2
-            
-            if pdf.get_y() + h_linha > 275:
-                pdf.add_page()
-                pdf.set_fill_color(17, 17, 17)
-                pdf.set_text_color(255, 255, 255)
-                pdf.set_font("Arial", 'B', 9)
-                for j, col in enumerate(colunas):
-                    pdf.cell(widths[j], 8, col, border=1, fill=True, align='C')
-                pdf.ln()
-                pdf.set_text_color(26, 28, 30)
-                pdf.set_font("Arial", '', 8)
-                
-            start_x = pdf.get_x()
-            start_y = pdf.get_y()
-            
-            for j, item in enumerate(linha_dados):
-                w = widths[j]
-                x = start_x + sum(widths[:j])
-                y = start_y
-                
-                pdf.rect(x, y, w, h_linha, 'D')
-                
-                linhas_deste_texto = obter_linhas_reais(pdf, w, item)
-                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
-                
-                pdf.set_xy(x, offset_y)
-                
-                align_h = 'C' if j == 0 else ('L' if j == 1 else 'R')
-                pdf.multi_cell(w, line_height, item, border=0, align=align_h)
                 
             pdf.set_xy(start_x, start_y + h_linha)
             
@@ -357,6 +291,15 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("📁 GERADOR")
     arquivos = st.file_uploader("Suba as planilhas que deseja transformar", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
+
+# --- LISTA MESTRE DE DESPESAS ---
+DESPESAS_VALIDAS = [
+    'ALUGUEL', 'CARTÃO DE CRÉDITO', 'MFC', 'CONSUMO', 'DESPACHANTE ADUANEIRO', 
+    'DESPESA VARIAVEL', 'EMPRESTIMO', 'DOAÇÃO', 'FORNECEDOR EXTERIOR', 
+    'FORNECEDORES', 'FUNCIONÁRIOS', 'IMPOSTO', 'MARKETING', 'PATRIMONIO', 
+    'PRESTADOR DE SERVIÇO', 'RENEGOCIAÇÃO - ACORDO', 'SEGURO', 'SÓCIOS', 'TRANSPORTADORA'
+]
+DESPESAS_VALIDAS_LIMPAS = [remover_acentos(d) for d in DESPESAS_VALIDAS]
 
 # --- LÓGICA PRINCIPAL ---
 if arquivos:
@@ -471,9 +414,19 @@ if arquivos:
                 df_tmp['PARCELA'] = df_tmp['PARCELA'].replace(['NAN', 'NONE', ''], '-')
             else:
                 df_tmp['PARCELA'] = "-"
+                
+            # MOTOR DE EXTRAÇÃO DE DESPESA (Varrer cada linha do Excel)
+            def extrair_despesa_linha(row):
+                txt_linha = remover_acentos(" ".join([str(x) for x in row.values if pd.notnull(x)]))
+                for idx_d, d_limpo in enumerate(DESPESAS_VALIDAS_LIMPAS):
+                    if d_limpo in txt_linha:
+                        return DESPESAS_VALIDAS[idx_d] # Retorna escrito perfeitamente como ordenado
+                return "" # Em branco se não encontrar
+
+            df_tmp['DESPESA'] = df_mes.apply(extrair_despesa_linha, axis=1)
             
             df_tmp = df_tmp.rename(columns={col_d: 'ENTIDADE', col_data: 'DATA', col_v: 'VALOR'})
-            resumos_limpos.append(df_tmp[['ENTIDADE', 'DATA', 'DOCUMENTO', 'NOTA FISCAL', 'PARCELA', 'VALOR']])
+            resumos_limpos.append(df_tmp[['ENTIDADE', 'DATA', 'DOCUMENTO', 'NOTA FISCAL', 'PARCELA', 'DESPESA', 'VALOR']])
 
     if resumos_limpos:
         df_master = pd.concat(resumos_limpos)
@@ -501,7 +454,8 @@ if arquivos:
             dados_grafico = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
             dados_grafico = dados_grafico[dados_grafico['VALOR'] > 0]
             
-            dados_tabela = df_filtrado.groupby(['ENTIDADE', 'DATA', 'DOCUMENTO', 'NOTA FISCAL', 'PARCELA'])['VALOR'].sum().reset_index().sort_values(by=['DATA', 'ENTIDADE'], ascending=[True, True])
+            # AGRUPAMENTO INCLUINDO A COLUNA NOVA
+            dados_tabela = df_filtrado.groupby(['ENTIDADE', 'DATA', 'DOCUMENTO', 'NOTA FISCAL', 'PARCELA', 'DESPESA'])['VALOR'].sum().reset_index().sort_values(by=['DATA', 'ENTIDADE'], ascending=[True, True])
             dados_tabela = dados_tabela[dados_tabela['VALOR'] > 0]
             
             dados_tabela['STATUS'] = dados_tabela['DATA'].apply(calcular_status_vencimento)
@@ -524,7 +478,6 @@ if arquivos:
                     titulo_customizado_grafico = st.text_input("📝 Título Customizado (Gráfico):", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
                     st.write("💡 *Use o ícone 📷 no canto superior direito do gráfico abaixo para baixar a imagem (JPG fundo branco).*")
                     
-                    # BOTÃO DE SELEÇÃO DO TIPO DE GRÁFICO
                     tipo_grafico = st.radio("📊 Escolha o modelo do Gráfico:", ["Por Entidade (Padrão)", "Categorizado (Por Tipo de Pagamento)"], horizontal=True)
                     
                     if tipo_grafico == "Por Entidade (Padrão)":
@@ -566,7 +519,6 @@ if arquivos:
                         st_echarts(options=bar_options, height=f"{altura_dinamica}px")
                         
                     else:
-                        # LÓGICA DE CATEGORIZAÇÃO (Agrupamento Simples)
                         def categorizar_pagamento(d):
                             d = str(d).upper()
                             if 'BOLETO' in d: return 'Boleto'
@@ -578,7 +530,6 @@ if arquivos:
                         df_cat = df_filtrado.copy()
                         df_cat['CATEGORIA'] = df_cat['DOCUMENTO'].apply(categorizar_pagamento)
                         
-                        # Soma total por categoria (sem dividir por clientes)
                         dados_grafico_cat = df_cat.groupby('CATEGORIA')['VALOR'].sum().reset_index()
                         dados_grafico_cat = dados_grafico_cat[dados_grafico_cat['VALOR'] > 0].sort_values(by='VALOR', ascending=True)
                         
@@ -620,12 +571,18 @@ if arquivos:
                 with aba_tab:
                     titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value=titulo_customizado_grafico, key="titulo_tabela_input")
                     
+                    st.write("💡 *Controle as colunas, altere a ordem ao seu gosto e clique para baixar.*")
+                    
                     # O NOVO MENU INTELIGENTE DE ORDENAÇÃO
-                    colunas_disponiveis = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "VALOR", "SITUAÇÃO"]
+                    colunas_disponiveis = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "DESPESA", "VALOR", "SITUAÇÃO"]
+                    
+                    # Configuração Padrão das colunas visíveis
+                    colunas_padrao = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "VALOR", "SITUAÇÃO"]
+                    
                     colunas_selecionadas = st.multiselect(
                         "⚙️ Selecione as colunas e a ordem desejada (Clique no X para remover e adicione na ordem que preferir):",
                         options=colunas_disponiveis,
-                        default=colunas_disponiveis
+                        default=colunas_padrao
                     )
                     
                     if not colunas_selecionadas:
@@ -637,13 +594,14 @@ if arquivos:
                     soma_total = tabela_final['VALOR'].sum()
                     soma_total_str = formatar_contabil(soma_total)
                     
-                    # MAPAS DE INJEÇÃO DINÂMICA
+                    # MAPAS DE INJEÇÃO DINÂMICA (Incluindo Despesa limpa com "")
                     mapa_pdf = {
                         "RAZÃO SOCIAL / DESCRIÇÃO": tabela_final['ENTIDADE'].tolist() + ["TOTAL GERAL"],
                         "DATA": tabela_final['DATA'].tolist() + ["-"],
                         "DOCUMENTO": tabela_final['DOCUMENTO'].tolist() + ["-"],
                         "NOTA FISCAL": tabela_final['NOTA FISCAL'].tolist() + ["-"],
                         "PARCELA": tabela_final['PARCELA'].tolist() + ["-"],
+                        "DESPESA": tabela_final['DESPESA'].tolist() + [""],
                         "VALOR": tabela_final['VALOR_STR'].tolist() + [soma_total_str],
                         "SITUAÇÃO": tabela_final['STATUS'].tolist() + ["-"]
                     }
@@ -654,6 +612,7 @@ if arquivos:
                         "DOCUMENTO": tabela_final['DOCUMENTO'].tolist() + ["<b>-</b>"],
                         "NOTA FISCAL": tabela_final['NOTA FISCAL'].tolist() + ["<b>-</b>"],
                         "PARCELA": tabela_final['PARCELA'].tolist() + ["<b>-</b>"],
+                        "DESPESA": tabela_final['DESPESA'].tolist() + ["<b></b>"],
                         "VALOR": tabela_final['VALOR_STR'].tolist() + [f"<b>{soma_total_str}</b>"],
                         "SITUAÇÃO": tabela_final['STATUS'].tolist() + ["<b>-</b>"]
                     }
@@ -664,6 +623,7 @@ if arquivos:
                         "DOCUMENTO": 90,
                         "NOTA FISCAL": 90,
                         "PARCELA": 80,
+                        "DESPESA": 130,
                         "VALOR": 110,
                         "SITUAÇÃO": 120
                     }
@@ -701,6 +661,7 @@ if arquivos:
                         elif "DOC" in cab_up: alinhamentos_plotly.append('center')
                         elif "NOTA" in cab_up or "NF" in cab_up: alinhamentos_plotly.append('center')
                         elif "PARC" in cab_up: alinhamentos_plotly.append('center')
+                        elif "DESPESA" in cab_up: alinhamentos_plotly.append('center')
                         elif "VALOR" in cab_up: alinhamentos_plotly.append('right')
                         elif "SITUAÇÃO" in cab_up: alinhamentos_plotly.append('center')
                         else: alinhamentos_plotly.append('center')
