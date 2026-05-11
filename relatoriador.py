@@ -135,6 +135,10 @@ def limpar_texto(t):
 def remover_acentos(texto):
     return unicodedata.normalize('NFKD', str(texto)).encode('ASCII', 'ignore').decode('utf-8').upper()
 
+def limpar_nome_arquivo(nome):
+    # Remove apenas os caracteres bloqueados pelo Windows, mantendo os espaços e acentos intactos!
+    return re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
+
 # MOTOR FALSO DE IMPRESSÃO - Calcula quebras reais de linha do FPDF
 def obter_linhas_reais(pdf, largura, texto):
     if pd.isna(texto) or str(texto).strip() == "": return 1
@@ -286,7 +290,7 @@ if FPDF is not None:
         pdf.set_font("Arial", 'B', 9)
         widths = [20, 120, 50]
         
-        df_ord = df.copy() # Já vem ordenado
+        df_ord = df.copy() 
         col_nome_dinamico = str(df_ord.columns[0]).upper()
         col_valor_dinamico = df_ord.columns[1]
         
@@ -344,7 +348,6 @@ if FPDF is not None:
                 
             pdf.set_xy(start_x, start_y + h_linha)
 
-    # Para manter o botão individual na aba de tabela funcionando
     def gerar_pdf_tabela(df, titulo, colunas, widths):
         pdf = PDFReport()
         append_pdf_tabela(pdf, df, titulo, colunas, widths)
@@ -482,7 +485,6 @@ if arquivos:
             else:
                 df_tmp['PARCELA'] = "-"
                 
-            # MOTOR DE EXTRAÇÃO DE DESPESA
             def extrair_despesa_linha(row):
                 txt_linha = remover_acentos(" ".join([str(x) for x in row.values if pd.notnull(x)]))
                 for idx_d, d_limpo in enumerate(DESPESAS_VALIDAS_LIMPAS):
@@ -518,13 +520,10 @@ if arquivos:
             comando_filtro = st.text_input("💬 Filtro de pesquisa...", placeholder="Ex: IMPORPECAS, KS MAQUINAS...")
             if comando_filtro: df_filtrado = df_filtrado[df_filtrado['ENTIDADE'].str.contains(comando_filtro.strip().upper(), case=False, na=False)]
 
-            # PREPARAÇÃO DOS DADOS DOS GRÁFICOS (Para serem usados em ambas as abas)
-            
-            # 1. Por Entidade
+            # PREPARAÇÃO DOS DADOS DOS GRÁFICOS
             dados_grafico_ent = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
             dados_grafico_ent = dados_grafico_ent[dados_grafico_ent['VALOR'] > 0]
             
-            # 2. Por Categoria (Pagamento)
             def categorizar_pagamento(d):
                 d = str(d).upper()
                 if 'BOLETO' in d: return 'Boleto'
@@ -538,15 +537,12 @@ if arquivos:
             dados_grafico_cat = df_cat.groupby('CATEGORIA')['VALOR'].sum().reset_index()
             dados_grafico_cat = dados_grafico_cat[dados_grafico_cat['VALOR'] > 0].sort_values(by='VALOR', ascending=False)
             
-            # 3. Por Despesa
             df_desp = df_filtrado[df_filtrado['DESPESA'] != ""]
-            if df_desp.empty:
-                dados_grafico_desp = pd.DataFrame()
+            if df_desp.empty: dados_grafico_desp = pd.DataFrame()
             else:
                 dados_grafico_desp = df_desp.groupby('DESPESA')['VALOR'].sum().reset_index()
                 dados_grafico_desp = dados_grafico_desp[dados_grafico_desp['VALOR'] > 0].sort_values(by='VALOR', ascending=False)
 
-            # Tabela Detalhada Base
             dados_tabela = df_filtrado.groupby(['ENTIDADE', 'DATA', 'DOCUMENTO', 'NOTA FISCAL', 'PARCELA', 'DESPESA'])['VALOR'].sum().reset_index().sort_values(by=['DATA', 'ENTIDADE'], ascending=[True, True])
             dados_tabela = dados_tabela[dados_tabela['VALOR'] > 0]
             
@@ -564,7 +560,6 @@ if arquivos:
                 m3.metric("Período Analisado", f"{dias_periodo} Dia(s)")
                 m4.metric("Quantidade de itens", f"{total_linhas} Linha(s)")
 
-                # NOVA DIVISÃO DE ABAS (Com Relatório Completo)
                 aba_visu, aba_tab, aba_rel = st.tabs(["📊 Gráfico", "📋 Tabela Detalhada", "📑 Relatório Completo"])
 
                 with aba_visu:
@@ -576,9 +571,7 @@ if arquivos:
                     if tipo_grafico == "Por Entidade (Padrão)":
                         dados_completos = dados_grafico_ent.sort_values(by='VALOR', ascending=True)
                         dados_barras_formatados = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
-                        
                         altura_dinamica = max(600, len(dados_completos) * 50) 
-                        
                         bar_options = {
                             "backgroundColor": "transparent",
                             "title": {"text": titulo_customizado_grafico, "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Calibri"}},
@@ -594,10 +587,8 @@ if arquivos:
                     elif tipo_grafico == "Categorizado (Por Tipo de Pagamento)":
                         dados_completos = dados_grafico_cat.sort_values(by='VALOR', ascending=True)
                         categorias_lista = dados_completos['CATEGORIA'].tolist()
-                        
                         dados_barras_cat = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
                         altura_dinamica_cat = max(400, len(categorias_lista) * 80)
-                        
                         bar_options_cat = {
                             "backgroundColor": "transparent",
                             "title": {"text": titulo_customizado_grafico + " - Categorizado", "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Calibri"}},
@@ -616,10 +607,8 @@ if arquivos:
                         else:
                             dados_completos = dados_grafico_desp.sort_values(by='VALOR', ascending=True)
                             categorias_desp_lista = dados_completos['DESPESA'].tolist()
-                            
                             dados_barras_desp = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
                             altura_dinamica_desp = max(400, len(categorias_desp_lista) * 60)
-                            
                             bar_options_desp = {
                                 "backgroundColor": "transparent",
                                 "title": {"text": titulo_customizado_grafico + " - Despesas", "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Calibri"}},
@@ -644,7 +633,13 @@ if arquivos:
                         
                         if colunas_ativas:
                             st.markdown("↕️ **2. Arraste as caixas abaixo para ordenar (Muda o visual e o PDF):**")
-                            colunas_selecionadas = sort_items(colunas_ativas, direction='vertical', key="ordenador_colunas")
+                            # ESTRUTURA BLINDADA DO ARRASTAR E SOLTAR
+                            sort_data_colunas = [{'header': 'Colunas (Arraste para cima ou para baixo)', 'items': colunas_ativas}]
+                            res_sort_colunas = sort_items(sort_data_colunas, direction='vertical', key="ordenador_colunas")
+                            if res_sort_colunas:
+                                colunas_selecionadas = res_sort_colunas[0]['items']
+                            else:
+                                colunas_selecionadas = colunas_ativas
                         else: colunas_selecionadas = []
                     else:
                         colunas_selecionadas = st.multiselect("⚙️ Selecione as colunas e a ordem (Instale 'streamlit-sortables' no terminal para poder arrastar com o mouse!):", options=colunas_disponiveis, default=colunas_padrao)
@@ -658,7 +653,6 @@ if arquivos:
                     soma_total = tabela_final['VALOR'].sum()
                     soma_total_str = formatar_contabil(soma_total)
                     
-                    # MAPAS DE INJEÇÃO DINÂMICA
                     mapa_pdf = {
                         "RAZÃO SOCIAL / DESCRIÇÃO": tabela_final['ENTIDADE'].tolist() + ["TOTAL GERAL"],
                         "DATA": tabela_final['DATA'].tolist() + ["-"],
@@ -741,12 +735,18 @@ if arquivos:
                     ]
                     
                     if sort_items is not None:
-                        ordem_relatorio = sort_items(opcoes_relatorio, direction='vertical', key="ordem_rel_pdf")
+                        # ESTRUTURA BLINDADA DO ARRASTAR E SOLTAR PARA O RELATÓRIO
+                        sort_data_rel = [{'header': 'Páginas do Relatório (Arraste para Ordenar)', 'items': opcoes_relatorio}]
+                        res_rel = sort_items(sort_data_rel, direction='vertical', key="ordem_rel_pdf")
+                        if res_rel:
+                            ordem_relatorio = res_rel[0]['items']
+                        else:
+                            ordem_relatorio = opcoes_relatorio
                     else:
                         ordem_relatorio = st.multiselect("Selecione e ordene os itens do relatório:", options=opcoes_relatorio, default=opcoes_relatorio)
                         
                     if ordem_relatorio:
-                        safe_title = re.sub(r'[^a-zA-Z0-9_\- ]', '', titulo_customizado_grafico).strip().replace(" ", "_")
+                        safe_title = limpar_nome_arquivo(titulo_customizado_grafico)
                         if not safe_title: safe_title = "Relatorio_JNL"
                         file_name_final = f"{safe_title}.pdf"
                         
@@ -754,14 +754,15 @@ if arquivos:
                             pdf_relatorio = PDFReport()
                             
                             for item in ordem_relatorio:
+                                # O título impresso no PDF copia exatamento o nome do item que você arrastou!
                                 if item == "Gráfico: Por Entidade (Padrão)" and not dados_grafico_ent.empty:
-                                    append_pdf_ranking(pdf_relatorio, dados_grafico_ent, f"{titulo_customizado_grafico} - Entidades")
+                                    append_pdf_ranking(pdf_relatorio, dados_grafico_ent, f"{titulo_customizado_grafico} - {item}")
                                 elif item == "Gráfico: Categorizado (Tipo Pagamento)" and not dados_grafico_cat.empty:
-                                    append_pdf_ranking(pdf_relatorio, dados_grafico_cat, f"{titulo_customizado_grafico} - Pagamentos")
+                                    append_pdf_ranking(pdf_relatorio, dados_grafico_cat, f"{titulo_customizado_grafico} - {item}")
                                 elif item == "Gráfico: Por Categoria de Despesa" and not dados_grafico_desp.empty:
-                                    append_pdf_ranking(pdf_relatorio, dados_grafico_desp, f"{titulo_customizado_grafico} - Despesas")
+                                    append_pdf_ranking(pdf_relatorio, dados_grafico_desp, f"{titulo_customizado_grafico} - {item}")
                                 elif item == "Tabela Detalhada" and not df_pdf.empty:
-                                    append_pdf_tabela(pdf_relatorio, df_pdf, f"{titulo_customizado_grafico} - Detalhado", colunas_selecionadas, larguras_colunas)
+                                    append_pdf_tabela(pdf_relatorio, df_pdf, f"{titulo_customizado_grafico} - {item}", colunas_selecionadas, larguras_colunas)
                                     
                             res = pdf_relatorio.output(dest='S')
                             if isinstance(res, str): pdf_bytes = res.encode('latin-1')
