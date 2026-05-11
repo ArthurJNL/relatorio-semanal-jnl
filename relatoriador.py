@@ -420,8 +420,8 @@ if arquivos:
                 txt_linha = remover_acentos(" ".join([str(x) for x in row.values if pd.notnull(x)]))
                 for idx_d, d_limpo in enumerate(DESPESAS_VALIDAS_LIMPAS):
                     if d_limpo in txt_linha:
-                        return DESPESAS_VALIDAS[idx_d] # Retorna escrito perfeitamente como ordenado
-                return "" # Em branco se não encontrar
+                        return DESPESAS_VALIDAS[idx_d] 
+                return ""
 
             df_tmp['DESPESA'] = df_mes.apply(extrair_despesa_linha, axis=1)
             
@@ -454,7 +454,6 @@ if arquivos:
             dados_grafico = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
             dados_grafico = dados_grafico[dados_grafico['VALOR'] > 0]
             
-            # AGRUPAMENTO INCLUINDO A COLUNA NOVA
             dados_tabela = df_filtrado.groupby(['ENTIDADE', 'DATA', 'DOCUMENTO', 'NOTA FISCAL', 'PARCELA', 'DESPESA'])['VALOR'].sum().reset_index().sort_values(by=['DATA', 'ENTIDADE'], ascending=[True, True])
             dados_tabela = dados_tabela[dados_tabela['VALOR'] > 0]
             
@@ -478,7 +477,8 @@ if arquivos:
                     titulo_customizado_grafico = st.text_input("📝 Título Customizado (Gráfico):", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
                     st.write("💡 *Use o ícone 📷 no canto superior direito do gráfico abaixo para baixar a imagem (JPG fundo branco).*")
                     
-                    tipo_grafico = st.radio("📊 Escolha o modelo do Gráfico:", ["Por Entidade (Padrão)", "Categorizado (Por Tipo de Pagamento)"], horizontal=True)
+                    # O NOVO MENU COM A 3ª OPÇÃO PARA DESPESAS
+                    tipo_grafico = st.radio("📊 Escolha o modelo do Gráfico:", ["Por Entidade (Padrão)", "Categorizado (Por Tipo de Pagamento)", "Por Categoria de Despesa"], horizontal=True)
                     
                     if tipo_grafico == "Por Entidade (Padrão)":
                         dados_completos = dados_grafico.sort_values(by='VALOR', ascending=True)
@@ -518,7 +518,7 @@ if arquivos:
                         }
                         st_echarts(options=bar_options, height=f"{altura_dinamica}px")
                         
-                    else:
+                    elif tipo_grafico == "Categorizado (Por Tipo de Pagamento)":
                         def categorizar_pagamento(d):
                             d = str(d).upper()
                             if 'BOLETO' in d: return 'Boleto'
@@ -567,6 +567,58 @@ if arquivos:
                             "series": [{"type": "bar", "data": dados_barras_cat, "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}}]
                         }
                         st_echarts(options=bar_options_cat, height=f"{altura_dinamica_cat}px")
+
+                    elif tipo_grafico == "Por Categoria de Despesa":
+                        # Filtra apenas as linhas onde a despesa foi identificada (não é vazio "")
+                        df_desp = df_filtrado[df_filtrado['DESPESA'] != ""]
+                        
+                        if df_desp.empty:
+                            st.warning("⚠️ Nenhuma despesa reconhecida foi encontrada no período filtrado.")
+                        else:
+                            dados_grafico_desp = df_desp.groupby('DESPESA')['VALOR'].sum().reset_index()
+                            dados_grafico_desp = dados_grafico_desp[dados_grafico_desp['VALOR'] > 0].sort_values(by='VALOR', ascending=True)
+                            
+                            categorias_desp_lista = dados_grafico_desp['DESPESA'].tolist()
+                            
+                            dados_barras_desp = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_grafico_desp.iterrows()]
+                            
+                            altura_dinamica_desp = max(400, len(categorias_desp_lista) * 60)
+                            
+                            bar_options_desp = {
+                                "backgroundColor": "transparent",
+                                "title": {"text": titulo_customizado_grafico + " - Despesas", "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Calibri"}},
+                                "toolbox": {
+                                    "feature": {
+                                        "saveAsImage": {
+                                            "show": True, 
+                                            "title": "Baixar JPG", 
+                                            "type": "jpeg", 
+                                            "backgroundColor": "#FFFFFF", 
+                                            "pixelRatio": 2
+                                        }
+                                    }
+                                },
+                                "tooltip": {
+                                    "trigger": "axis",
+                                    "axisPointer": {"type": "shadow"}
+                                }, 
+                                "grid": {"top": 80, "left": "1%", "right": "15%", "bottom": "5%", "containLabel": True},
+                                "xAxis": {"type": "value", "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}},
+                                "yAxis": {
+                                    "type": "category", 
+                                    "data": categorias_desp_lista, 
+                                    "axisLabel": {
+                                        "interval": 0, 
+                                        "width": 180, 
+                                        "overflow": "break", 
+                                        "lineHeight": 14,
+                                        "color": "#1A1C1E", 
+                                        "fontWeight": "bold"
+                                    }
+                                },
+                                "series": [{"type": "bar", "data": dados_barras_desp, "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}}]
+                            }
+                            st_echarts(options=bar_options_desp, height=f"{altura_dinamica_desp}px")
 
                 with aba_tab:
                     titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value=titulo_customizado_grafico, key="titulo_tabela_input")
