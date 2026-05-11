@@ -32,7 +32,6 @@ st.set_page_config(page_title="RELATORIADOR", page_icon="🛡️", layout="wide"
 # --- DESIGN PREMIUM CLEAN (B&W) ---
 st.markdown("""
     <style>
-    /* Fonte Calibri exigida pelo Senhor */
     html, body, [class*="css"] { font-family: 'Calibri', sans-serif; }
     .main { background-color: #F8F9FB; }
     [data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E0E4E8; }
@@ -664,25 +663,31 @@ if arquivos:
 
                 with aba_tab:
                     titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value=titulo_customizado_grafico, key="titulo_tabela_input")
-                    st.write("💡 *Para remover uma coluna, clique no 'X'. Para mudar a ordem no PDF, arraste as caixas horizontalmente.*")
                     
-                    colunas_disponiveis = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "DESPESA", "VALOR", "SITUAÇÃO"]
-                    colunas_padrao = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "VALOR", "SITUAÇÃO"]
+                    col_ativas_padrao = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "VALOR", "SITUAÇÃO"]
+                    col_ocultas_padrao = ["DESPESA"]
                     
-                    # O "X" para remover está aqui (Multiselect padrão do Streamlit)
-                    colunas_ativas = st.multiselect("Adicionar / Remover Colunas:", options=colunas_disponiveis, default=colunas_padrao, label_visibility="collapsed")
-                    
-                    # O Arrastar e Soltar Horizontal está aqui
-                    if sort_items is not None and colunas_ativas:
-                        colunas_selecionadas = sort_items(colunas_ativas, direction='horizontal', key="ordenador_colunas")
+                    if sort_items is not None:
+                        st.markdown("⚙️ **Organize as Colunas:** Arraste para a caixa de cima para incluir e ordenar. Arraste para a caixa de baixo para excluir do PDF.")
+                        
+                        # O MOTOR DIVIDIDO EM DUAS CAIXAS VERTICAIS (Sem botão X duplicado)
+                        sort_data_colunas = [
+                            {'header': '✅ COLUNAS NO PDF E NA TELA (Arraste para ordenar)', 'items': col_ativas_padrao},
+                            {'header': '❌ COLUNAS OCULTAS (Arraste para cá para remover)', 'items': col_ocultas_padrao}
+                        ]
+                        
+                        res_sort_colunas = sort_items(sort_data_colunas, direction='vertical', key="ordenador_colunas")
+                        colunas_selecionadas = res_sort_colunas[0]['items'] if res_sort_colunas else col_ativas_padrao
                     else:
-                        colunas_selecionadas = colunas_ativas
+                        st.info("⚠️ Instale 'streamlit-sortables' no terminal para ativar o modo arrastar e soltar.")
+                        colunas_selecionadas = col_ativas_padrao
                     
                     if not colunas_selecionadas:
                         colunas_selecionadas = ["RAZÃO SOCIAL / DESCRIÇÃO", "VALOR"] # Failsafe
 
                     tabela_final = dados_tabela.copy()
                     tabela_final['VALOR_STR'] = tabela_final['VALOR'].apply(formatar_contabil)
+                    
                     soma_total = tabela_final['VALOR'].sum()
                     soma_total_str = formatar_contabil(soma_total)
                     
@@ -696,6 +701,7 @@ if arquivos:
                         "VALOR": tabela_final['VALOR_STR'].tolist() + [soma_total_str],
                         "SITUAÇÃO": tabela_final['STATUS'].tolist() + ["-"]
                     }
+                    
                     mapa_visual = {
                         "RAZÃO SOCIAL / DESCRIÇÃO": tabela_final['ENTIDADE'].tolist() + ["<b>TOTAL GERAL</b>"],
                         "DATA": tabela_final['DATA'].tolist() + ["<b>-</b>"],
@@ -706,6 +712,7 @@ if arquivos:
                         "VALOR": tabela_final['VALOR_STR'].tolist() + [f"<b>{soma_total_str}</b>"],
                         "SITUAÇÃO": tabela_final['STATUS'].tolist() + ["<b>-</b>"]
                     }
+                    
                     mapa_larguras = {
                         "RAZÃO SOCIAL / DESCRIÇÃO": 300, "DATA": 90, "DOCUMENTO": 90, "NOTA FISCAL": 90,
                         "PARCELA": 80, "DESPESA": 130, "VALOR": 110, "SITUAÇÃO": 120
@@ -747,6 +754,7 @@ if arquivos:
                         header=dict(values=cabecalhos, fill_color='#111111', align=alinhamentos_plotly, font=dict(family='Calibri', color='white', size=13)),
                         cells=dict(values=celulas, fill_color=array_cores_fundo, align=alinhamentos_plotly, font=dict(family='Calibri', color='#1A1C1E', size=12), height=55)
                     )])
+                    
                     fig_table.update_layout(
                         title=dict(text=f"<b>{titulo_customizado_grafico}</b>", font=dict(family='Calibri', color='#111111', size=16)),
                         margin=dict(l=0, r=0, b=0, t=40), height=550, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
@@ -754,8 +762,7 @@ if arquivos:
                     st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
 
                 with aba_rel:
-                    st.write("⚙️ **Monte o seu Relatório Completo**")
-                    st.write("💡 *Clique no 'X' para remover uma página. Arraste horizontalmente para mudar a ordem das páginas no PDF.*")
+                    st.write("⚙️ **Monte o seu Relatório Completo:** Arraste as páginas para a caixa de cima para incluir no PDF.")
                     
                     opcoes_relatorio = [
                         "Gráfico: Por Entidade (Padrão)",
@@ -764,12 +771,15 @@ if arquivos:
                         "Tabela Detalhada"
                     ]
                     
-                    itens_ativos = st.multiselect("Adicionar / Remover Páginas:", options=opcoes_relatorio, default=opcoes_relatorio, label_visibility="collapsed")
-                    
-                    if sort_items is not None and itens_ativos:
-                        ordem_relatorio = sort_items(itens_ativos, direction='horizontal', key="ordem_rel_pdf")
+                    if sort_items is not None:
+                        sort_data_rel = [
+                            {'header': '✅ INCLUIR NO PDF (Arraste para ordenar)', 'items': opcoes_relatorio},
+                            {'header': '❌ NÃO INCLUIR', 'items': []}
+                        ]
+                        res_rel = sort_items(sort_data_rel, direction='vertical', key="ordem_rel_pdf")
+                        ordem_relatorio = res_rel[0]['items'] if res_rel else opcoes_relatorio
                     else:
-                        ordem_relatorio = itens_ativos
+                        ordem_relatorio = opcoes_relatorio
                         
                     if ordem_relatorio:
                         safe_title = limpar_nome_arquivo(titulo_customizado_grafico)
@@ -796,6 +806,8 @@ if arquivos:
                             st.download_button(label="🚀 Baixar Relatório Completo (PDF)", data=pdf_bytes, file_name=file_name_final, mime="application/pdf", use_container_width=True, key="btn_relatorio_completo")
                         else:
                             st.error("⚠️ Biblioteca 'fpdf' não instalada.")
+                    else:
+                        st.info("⚠️ Arraste pelo menos um item para a caixa de 'INCLUIR NO PDF' para gerar o relatório.")
                             
             else: st.info("Todos os valores encontrados estão zerados no período selecionado.")
         else: st.warning("⚠️ Nenhuma data válida encontrada no ficheiro. Verifique a coluna de datas.")
