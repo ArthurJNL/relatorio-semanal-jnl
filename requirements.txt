@@ -1,7 +1,8 @@
 streamlit
 pandas
 streamlit-echarts
-plotly
 openpyxl
-ExtractTable
+plotly
 fpdf
+matplotlib
+streamlit-sortables
