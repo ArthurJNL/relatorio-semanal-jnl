@@ -32,6 +32,7 @@ st.set_page_config(page_title="RELATORIADOR", page_icon="🛡️", layout="wide"
 # --- DESIGN PREMIUM CLEAN (B&W) ---
 st.markdown("""
     <style>
+    /* Fonte Calibri exigida pelo Senhor */
     html, body, [class*="css"] { font-family: 'Calibri', sans-serif; }
     .main { background-color: #F8F9FB; }
     [data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E0E4E8; }
@@ -285,42 +286,41 @@ if FPDF is not None:
 
     def append_pdf_grafico_imagem(pdf, df, titulo, col_nome, col_valor):
         if plt is not None and tempfile is not None:
-            # Ordenar do maior para o menor
             df_sorted = df.sort_values(by=col_valor, ascending=False).reset_index(drop=True)
             
-            # NOVIDADE: Cortar em pedaços de no máximo 15 para não esmagar
+            # CORTAR EM PÁGINAS DE NO MÁXIMO 15 ITENS PARA NÃO ESMAGAR
             chunk_size = 15
             chunks = [df_sorted[i:i + chunk_size] for i in range(0, len(df_sorted), chunk_size)]
             
             for idx, chunk in enumerate(chunks):
                 pdf.add_page()
                 
-                # Título no topo
                 if titulo:
                     pdf.set_font("Arial", 'B', 14)
                     titulo_final = titulo + (f" (Parte {idx+1})" if len(chunks) > 1 else "")
                     pdf.cell(0, 10, limpar_texto(titulo_final), 0, 1, 'C')
-                    pdf.ln(10) # Espaçamento depois do título
+                    pdf.ln(10) 
                 
-                # Inverter a ordem apenas no chunk para que o Matplotlib desenhe o maior no topo
-                chunk_plot = chunk.iloc[::-1]
+                # Reseta o index do chunk e inverte para o Matplotlib desenhar do maior para o menor
+                chunk_plot = chunk.iloc[::-1].reset_index(drop=True)
                 
-                # Altura dinâmica controlada para o gráfico
                 fig_height = max(4, len(chunk_plot) * 0.6)
                 fig, ax = plt.subplots(figsize=(10, fig_height))
                 
-                # Limite de 45 caracteres no texto para não ocupar a tela toda
                 nomes_limpos = chunk_plot[col_nome].astype(str).apply(lambda x: (x[:45] + '...') if len(x) > 45 else x)
-                ax.barh(nomes_limpos, chunk_plot[col_valor], color='#111111', height=0.6)
                 
-                # Limpar bordas
-                for spine in ['top', 'right', 'bottom', 'left']: 
-                    ax.spines[spine].set_visible(False)
+                # BLINDAGEM CONTRA NOMES DUPLICADOS (Impede o erro que misturava as barras)
+                y_positions = range(len(chunk_plot))
+                ax.barh(y_positions, chunk_plot[col_valor], color='#111111', height=0.6)
+                ax.set_yticks(y_positions)
+                ax.set_yticklabels(nomes_limpos)
+                
+                for spine in ['top', 'right', 'bottom', 'left']: ax.spines[spine].set_visible(False)
                 ax.xaxis.set_visible(False)
                 ax.tick_params(axis='y', length=0, labelsize=10)
                 
-                # NOVIDADE: Forçar 35% de margem extra para os números grandes caberem sem voar da tela
-                max_val = chunk_plot[col_valor].max()
+                # ESPAÇO EXTRA: 35% de margem no topo do eixo X para os números grandes não voarem da tela
+                max_val = max(chunk_plot[col_valor].max(), 0.1)
                 ax.set_xlim(0, max_val * 1.35)
                 
                 for index, value in enumerate(chunk_plot[col_valor]):
@@ -332,9 +332,11 @@ if FPDF is not None:
                 plt.savefig(tmpfile.name, format='png', dpi=200, bbox_inches='tight', facecolor='#FFFFFF')
                 plt.close(fig)
                 
-                # NOVIDADE: Centralizar verticalmente no meio da página A4
-                # Se tem poucos itens, empurra a imagem mais para baixo
-                y_pos = max(pdf.get_y() + 10, 148 - (len(chunk_plot) * 5))
+                # CENTRALIZAÇÃO PERFEITA NO MEIO DA FOLHA A4
+                # 1 polegada (do figsize) = 19mm na impressão final. A4 tem 297mm de altura.
+                image_height_mm = fig_height * 19
+                center_y = 148.5 - (image_height_mm / 2)
+                y_pos = max(pdf.get_y() + 5, center_y) # Garante que nunca sobrepõe o título
                 
                 pdf.image(tmpfile.name, x=10, y=y_pos, w=190)
                 
@@ -636,7 +638,7 @@ if arquivos:
                                 {'header': '❌ LIXEIRA (Arraste p/ cá para remover)', 'items': col_ocultas_padrao}
                             ]
                         
-                        res_sort_colunas = sort_items(st.session_state["estado_colunas"], multi_containers=True, direction='vertical', key="ordenador_colunas")
+                        res_sort_colunas = sort_items(st.session_state["estado_colunas"], multi_containers=True, direction='horizontal', key="ordenador_colunas")
                         if res_sort_colunas:
                             st.session_state["estado_colunas"] = res_sort_colunas
                             
