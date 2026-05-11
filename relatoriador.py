@@ -5,12 +5,18 @@ import plotly.graph_objects as go
 from datetime import datetime
 import math
 import unicodedata
+import re
 
 # --- MOTORES EXTERNOS ---
 try:
     from fpdf import FPDF
 except ImportError:
     FPDF = None
+
+try:
+    from streamlit_sortables import sort_items
+except ImportError:
+    sort_items = None
 
 # 1. SETUP DA PÁGINA (LIGHT MODE MINIMALISTA)
 st.set_page_config(page_title="RELATORIADOR", page_icon="🛡️", layout="wide")
@@ -155,6 +161,9 @@ def obter_linhas_reais(pdf, largura, texto):
         linhas += linhas_neste_paragrafo
     return max(1, linhas)
 
+# ==========================================
+# MOTOR UNIFICADO DE PDF (FUSÃO DE RELATÓRIOS)
+# ==========================================
 if FPDF is not None:
     class PDFReport(FPDF):
         def footer(self):
@@ -162,43 +171,27 @@ if FPDF is not None:
             self.set_font('Arial', 'I', 8)
             self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
 
-    def gerar_pdf_tabela(df, titulo):
-        pdf = PDFReport()
+    def append_pdf_tabela(pdf, df, titulo, colunas, widths):
         pdf.add_page()
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
-        pdf.ln(5)
-        
-        colunas = list(df.columns)
-        
-        base_widths = []
-        for c in colunas:
-            c_up = c.upper()
-            if "RAZÃO" in c_up or "DESCRI" in c_up: base_widths.append(90)
-            elif "DATA" in c_up: base_widths.append(30)
-            elif "DOC" in c_up: base_widths.append(35)
-            elif "NOTA" in c_up or "NF" in c_up: base_widths.append(35)
-            elif "PARC" in c_up: base_widths.append(30)
-            elif "DESPESA" in c_up: base_widths.append(40) # Alargamento para Despesas
-            elif "VALOR" in c_up: base_widths.append(35)
-            elif "SITUA" in c_up: base_widths.append(40)
-            else: base_widths.append(30)
+        if titulo:
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
+            pdf.ln(5)
             
-        fator = 190 / sum(base_widths)
-        widths = [w * fator for w in base_widths]
+        fator = 190 / sum(widths)
+        widths_norm = [w * fator for w in widths]
             
         pdf.set_fill_color(17, 17, 17)
         pdf.set_text_color(255, 255, 255)
         
-        # CABEÇALHO COM AUTOAJUSTE DE FONTE
         for i, col in enumerate(colunas):
             col_text = limpar_texto(col)
             pdf.set_font("Arial", 'B', 9)
             font_size = 9.0
-            while pdf.get_string_width(col_text) > widths[i] - 2 and font_size > 5:
+            while pdf.get_string_width(col_text) > widths_norm[i] - 2 and font_size > 5:
                 font_size -= 0.5
                 pdf.set_font("Arial", 'B', font_size)
-            pdf.cell(widths[i], 8, col_text, border=1, fill=True, align='C')
+            pdf.cell(widths_norm[i], 8, col_text, border=1, fill=True, align='C')
             pdf.set_font("Arial", 'B', 9)
         pdf.ln()
         
@@ -218,7 +211,7 @@ if FPDF is not None:
             max_linhas = 1
             for i, item in enumerate(row):
                 texto = limpar_texto(item)
-                linhas = obter_linhas_reais(pdf, widths[i], texto)
+                linhas = obter_linhas_reais(pdf, widths_norm[i], texto)
                 if linhas > max_linhas:
                     max_linhas = linhas
                     
@@ -233,10 +226,10 @@ if FPDF is not None:
                     col_text = limpar_texto(col)
                     pdf.set_font("Arial", 'B', 9)
                     font_size = 9.0
-                    while pdf.get_string_width(col_text) > widths[i] - 2 and font_size > 5:
+                    while pdf.get_string_width(col_text) > widths_norm[i] - 2 and font_size > 5:
                         font_size -= 0.5
                         pdf.set_font("Arial", 'B', font_size)
-                    pdf.cell(widths[i], 8, col_text, border=1, fill=True, align='C')
+                    pdf.cell(widths_norm[i], 8, col_text, border=1, fill=True, align='C')
                     pdf.set_font("Arial", 'B', 9)
                 pdf.ln()
                 
@@ -254,8 +247,8 @@ if FPDF is not None:
             
             for i, item in enumerate(row):
                 texto = limpar_texto(item)
-                w = widths[i]
-                x = start_x + sum(widths[:i])
+                w = widths_norm[i]
+                x = start_x + sum(widths_norm[:i])
                 y = start_y
                 
                 style = 'DF' if is_total else 'D'
@@ -266,7 +259,7 @@ if FPDF is not None:
                 
                 pdf.set_xy(x, offset_y)
                 
-                col_upper = colunas[i].upper()
+                col_upper = str(colunas[i]).upper()
                 if "RAZÃO" in col_upper or "DESCRI" in col_upper: align_h = 'L'
                 elif "DATA" in col_upper: align_h = 'C'
                 elif "DOC" in col_upper: align_h = 'C'
@@ -280,7 +273,81 @@ if FPDF is not None:
                 pdf.multi_cell(w, line_height, texto, border=0, align=align_h)
                 
             pdf.set_xy(start_x, start_y + h_linha)
+
+    def append_pdf_ranking(pdf, df, titulo):
+        pdf.add_page()
+        if titulo:
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
+            pdf.ln(5)
+        
+        pdf.set_fill_color(17, 17, 17)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", 'B', 9)
+        widths = [20, 120, 50]
+        
+        df_ord = df.copy() # Já vem ordenado
+        col_nome_dinamico = str(df_ord.columns[0]).upper()
+        col_valor_dinamico = df_ord.columns[1]
+        
+        colunas = ["POS.", col_nome_dinamico, "VALOR TOTAL"]
+        for i, col in enumerate(colunas):
+            pdf.cell(widths[i], 8, limpar_texto(col), border=1, fill=True, align='C')
+        pdf.ln()
+        
+        pdf.set_text_color(26, 28, 30)
+        pdf.set_font("Arial", '', 8)
+        line_height = 5
+        
+        for i, row in df_ord.iterrows():
+            pos = f"{i + 1}."
+            nome = limpar_texto(row[df_ord.columns[0]]) 
+            valor = f"R$ {row[col_valor_dinamico]:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            linha_dados = [pos, nome, valor]
             
+            max_linhas = 1
+            for j, item in enumerate(linha_dados):
+                linhas = obter_linhas_reais(pdf, widths[j], item)
+                if linhas > max_linhas:
+                    max_linhas = linhas
+                    
+            h_linha = (max_linhas * line_height) + 2
+            
+            if pdf.get_y() + h_linha > 275:
+                pdf.add_page()
+                pdf.set_fill_color(17, 17, 17)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_font("Arial", 'B', 9)
+                for j, col in enumerate(colunas):
+                    pdf.cell(widths[j], 8, limpar_texto(col), border=1, fill=True, align='C')
+                pdf.ln()
+                pdf.set_text_color(26, 28, 30)
+                pdf.set_font("Arial", '', 8)
+                
+            start_x = pdf.get_x()
+            start_y = pdf.get_y()
+            
+            for j, item in enumerate(linha_dados):
+                w = widths[j]
+                x = start_x + sum(widths[:j])
+                y = start_y
+                
+                pdf.rect(x, y, w, h_linha, 'D')
+                
+                linhas_deste_texto = obter_linhas_reais(pdf, w, item)
+                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
+                
+                pdf.set_xy(x, offset_y)
+                
+                align_h = 'C' if j == 0 else ('L' if j == 1 else 'R')
+                pdf.multi_cell(w, line_height, item, border=0, align=align_h)
+                
+            pdf.set_xy(start_x, start_y + h_linha)
+
+    # Para manter o botão individual na aba de tabela funcionando
+    def gerar_pdf_tabela(df, titulo, colunas, widths):
+        pdf = PDFReport()
+        append_pdf_tabela(pdf, df, titulo, colunas, widths)
         res = pdf.output(dest='S')
         if isinstance(res, str): return res.encode('latin-1')
         return bytes(res)
@@ -415,7 +482,7 @@ if arquivos:
             else:
                 df_tmp['PARCELA'] = "-"
                 
-            # MOTOR DE EXTRAÇÃO DE DESPESA (Varrer cada linha do Excel)
+            # MOTOR DE EXTRAÇÃO DE DESPESA
             def extrair_despesa_linha(row):
                 txt_linha = remover_acentos(" ".join([str(x) for x in row.values if pd.notnull(x)]))
                 for idx_d, d_limpo in enumerate(DESPESAS_VALIDAS_LIMPAS):
@@ -451,37 +518,63 @@ if arquivos:
             comando_filtro = st.text_input("💬 Filtro de pesquisa...", placeholder="Ex: IMPORPECAS, KS MAQUINAS...")
             if comando_filtro: df_filtrado = df_filtrado[df_filtrado['ENTIDADE'].str.contains(comando_filtro.strip().upper(), case=False, na=False)]
 
-            dados_grafico = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
-            dados_grafico = dados_grafico[dados_grafico['VALOR'] > 0]
+            # PREPARAÇÃO DOS DADOS DOS GRÁFICOS (Para serem usados em ambas as abas)
             
+            # 1. Por Entidade
+            dados_grafico_ent = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
+            dados_grafico_ent = dados_grafico_ent[dados_grafico_ent['VALOR'] > 0]
+            
+            # 2. Por Categoria (Pagamento)
+            def categorizar_pagamento(d):
+                d = str(d).upper()
+                if 'BOLETO' in d: return 'Boleto'
+                elif 'CART' in d: return 'Cartão'
+                elif any(x in d for x in ['DEP', 'PIX', 'VISTA', 'TRANSF', 'TED', 'DOC']): return 'Depósito/à vista/pix'
+                elif 'DIN' in d or 'ESP' in d: return 'Dinheiro'
+                else: return 'Outros'
+                
+            df_cat = df_filtrado.copy()
+            df_cat['CATEGORIA'] = df_cat['DOCUMENTO'].apply(categorizar_pagamento)
+            dados_grafico_cat = df_cat.groupby('CATEGORIA')['VALOR'].sum().reset_index()
+            dados_grafico_cat = dados_grafico_cat[dados_grafico_cat['VALOR'] > 0].sort_values(by='VALOR', ascending=False)
+            
+            # 3. Por Despesa
+            df_desp = df_filtrado[df_filtrado['DESPESA'] != ""]
+            if df_desp.empty:
+                dados_grafico_desp = pd.DataFrame()
+            else:
+                dados_grafico_desp = df_desp.groupby('DESPESA')['VALOR'].sum().reset_index()
+                dados_grafico_desp = dados_grafico_desp[dados_grafico_desp['VALOR'] > 0].sort_values(by='VALOR', ascending=False)
+
+            # Tabela Detalhada Base
             dados_tabela = df_filtrado.groupby(['ENTIDADE', 'DATA', 'DOCUMENTO', 'NOTA FISCAL', 'PARCELA', 'DESPESA'])['VALOR'].sum().reset_index().sort_values(by=['DATA', 'ENTIDADE'], ascending=[True, True])
             dados_tabela = dados_tabela[dados_tabela['VALOR'] > 0]
             
             dados_tabela['STATUS'] = dados_tabela['DATA'].apply(calcular_status_vencimento)
             dados_tabela['DATA'] = dados_tabela['DATA'].dt.strftime('%d/%m/%Y').fillna("-")
             
-            if not dados_grafico.empty:
+            if not dados_grafico_ent.empty:
                 m1, m2, m3, m4 = st.columns(4)
-                total_cash = dados_grafico['VALOR'].sum()
+                total_cash = dados_grafico_ent['VALOR'].sum()
                 dias_periodo = (dt_fim - dt_inicio).days + 1
                 total_linhas = len(dados_tabela)
                 
                 m1.metric("Volume Total (Filtrado)", formatar_contabil(total_cash))
-                m2.metric("Principal Entidade", dados_grafico.iloc[0]['ENTIDADE'])
+                m2.metric("Principal Entidade", dados_grafico_ent.iloc[0]['ENTIDADE'])
                 m3.metric("Período Analisado", f"{dias_periodo} Dia(s)")
                 m4.metric("Quantidade de itens", f"{total_linhas} Linha(s)")
 
-                aba_visu, aba_tab = st.tabs(["📊 Gráfico", "📋 Tabela Detalhada"])
+                # NOVA DIVISÃO DE ABAS (Com Relatório Completo)
+                aba_visu, aba_tab, aba_rel = st.tabs(["📊 Gráfico", "📋 Tabela Detalhada", "📑 Relatório Completo"])
 
                 with aba_visu:
-                    titulo_customizado_grafico = st.text_input("📝 Título Customizado (Gráfico):", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
+                    titulo_customizado_grafico = st.text_input("📝 Título Customizado (Sistema):", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
                     st.write("💡 *Use o ícone 📷 no canto superior direito do gráfico abaixo para baixar a imagem (JPG fundo branco).*")
                     
-                    # O NOVO MENU COM A 3ª OPÇÃO PARA DESPESAS
                     tipo_grafico = st.radio("📊 Escolha o modelo do Gráfico:", ["Por Entidade (Padrão)", "Categorizado (Por Tipo de Pagamento)", "Por Categoria de Despesa"], horizontal=True)
                     
                     if tipo_grafico == "Por Entidade (Padrão)":
-                        dados_completos = dados_grafico.sort_values(by='VALOR', ascending=True)
+                        dados_completos = dados_grafico_ent.sort_values(by='VALOR', ascending=True)
                         dados_barras_formatados = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
                         
                         altura_dinamica = max(600, len(dados_completos) * 50) 
@@ -489,153 +582,72 @@ if arquivos:
                         bar_options = {
                             "backgroundColor": "transparent",
                             "title": {"text": titulo_customizado_grafico, "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Calibri"}},
-                            "toolbox": {
-                                "feature": {
-                                    "saveAsImage": {
-                                        "show": True, 
-                                        "title": "Baixar JPG", 
-                                        "type": "jpeg", 
-                                        "backgroundColor": "#FFFFFF", 
-                                        "pixelRatio": 2
-                                    }
-                                }
-                            },
+                            "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar JPG", "type": "jpeg", "backgroundColor": "#FFFFFF", "pixelRatio": 2}}},
                             "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
                             "grid": {"top": 80, "left": "1%", "right": "15%", "bottom": "1%", "containLabel": True},
                             "xAxis": {"type": "value", "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}},
-                            "yAxis": {
-                                "type": "category", 
-                                "data": dados_completos['ENTIDADE'].tolist(), 
-                                "axisLabel": {
-                                    "interval": 0, 
-                                    "width": 220, 
-                                    "overflow": "break", 
-                                    "lineHeight": 14,
-                                    "color": "#1A1C1E"
-                                }
-                            },
+                            "yAxis": {"type": "category", "data": dados_completos['ENTIDADE'].tolist(), "axisLabel": {"interval": 0, "width": 220, "overflow": "break", "lineHeight": 14, "color": "#1A1C1E"}},
                             "series": [{"type": "bar", "data": dados_barras_formatados, "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}}]
                         }
                         st_echarts(options=bar_options, height=f"{altura_dinamica}px")
                         
                     elif tipo_grafico == "Categorizado (Por Tipo de Pagamento)":
-                        def categorizar_pagamento(d):
-                            d = str(d).upper()
-                            if 'BOLETO' in d: return 'Boleto'
-                            elif 'CART' in d: return 'Cartão'
-                            elif any(x in d for x in ['DEP', 'PIX', 'VISTA', 'TRANSF', 'TED', 'DOC']): return 'Depósito/à vista/pix'
-                            elif 'DIN' in d or 'ESP' in d: return 'Dinheiro'
-                            else: return 'Outros'
-                            
-                        df_cat = df_filtrado.copy()
-                        df_cat['CATEGORIA'] = df_cat['DOCUMENTO'].apply(categorizar_pagamento)
+                        dados_completos = dados_grafico_cat.sort_values(by='VALOR', ascending=True)
+                        categorias_lista = dados_completos['CATEGORIA'].tolist()
                         
-                        dados_grafico_cat = df_cat.groupby('CATEGORIA')['VALOR'].sum().reset_index()
-                        dados_grafico_cat = dados_grafico_cat[dados_grafico_cat['VALOR'] > 0].sort_values(by='VALOR', ascending=True)
-                        
-                        categorias_lista = dados_grafico_cat['CATEGORIA'].tolist()
-                        
-                        dados_barras_cat = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_grafico_cat.iterrows()]
-                        
+                        dados_barras_cat = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
                         altura_dinamica_cat = max(400, len(categorias_lista) * 80)
                         
                         bar_options_cat = {
                             "backgroundColor": "transparent",
                             "title": {"text": titulo_customizado_grafico + " - Categorizado", "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Calibri"}},
-                            "toolbox": {
-                                "feature": {
-                                    "saveAsImage": {
-                                        "show": True, 
-                                        "title": "Baixar JPG", 
-                                        "type": "jpeg", 
-                                        "backgroundColor": "#FFFFFF", 
-                                        "pixelRatio": 2
-                                    }
-                                }
-                            },
-                            "tooltip": {
-                                "trigger": "axis",
-                                "axisPointer": {"type": "shadow"}
-                            }, 
+                            "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar JPG", "type": "jpeg", "backgroundColor": "#FFFFFF", "pixelRatio": 2}}},
+                            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, 
                             "grid": {"top": 80, "left": "1%", "right": "15%", "bottom": "5%", "containLabel": True},
                             "xAxis": {"type": "value", "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}},
-                            "yAxis": {
-                                "type": "category", 
-                                "data": categorias_lista, 
-                                "axisLabel": {"color": "#1A1C1E", "fontWeight": "bold"}
-                            },
+                            "yAxis": {"type": "category", "data": categorias_lista, "axisLabel": {"color": "#1A1C1E", "fontWeight": "bold"}},
                             "series": [{"type": "bar", "data": dados_barras_cat, "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}}]
                         }
                         st_echarts(options=bar_options_cat, height=f"{altura_dinamica_cat}px")
 
                     elif tipo_grafico == "Por Categoria de Despesa":
-                        # Filtra apenas as linhas onde a despesa foi identificada (não é vazio "")
-                        df_desp = df_filtrado[df_filtrado['DESPESA'] != ""]
-                        
-                        if df_desp.empty:
+                        if dados_grafico_desp.empty:
                             st.warning("⚠️ Nenhuma despesa reconhecida foi encontrada no período filtrado.")
                         else:
-                            dados_grafico_desp = df_desp.groupby('DESPESA')['VALOR'].sum().reset_index()
-                            dados_grafico_desp = dados_grafico_desp[dados_grafico_desp['VALOR'] > 0].sort_values(by='VALOR', ascending=True)
+                            dados_completos = dados_grafico_desp.sort_values(by='VALOR', ascending=True)
+                            categorias_desp_lista = dados_completos['DESPESA'].tolist()
                             
-                            categorias_desp_lista = dados_grafico_desp['DESPESA'].tolist()
-                            
-                            dados_barras_desp = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_grafico_desp.iterrows()]
-                            
+                            dados_barras_desp = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
                             altura_dinamica_desp = max(400, len(categorias_desp_lista) * 60)
                             
                             bar_options_desp = {
                                 "backgroundColor": "transparent",
                                 "title": {"text": titulo_customizado_grafico + " - Despesas", "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Calibri"}},
-                                "toolbox": {
-                                    "feature": {
-                                        "saveAsImage": {
-                                            "show": True, 
-                                            "title": "Baixar JPG", 
-                                            "type": "jpeg", 
-                                            "backgroundColor": "#FFFFFF", 
-                                            "pixelRatio": 2
-                                        }
-                                    }
-                                },
-                                "tooltip": {
-                                    "trigger": "axis",
-                                    "axisPointer": {"type": "shadow"}
-                                }, 
+                                "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar JPG", "type": "jpeg", "backgroundColor": "#FFFFFF", "pixelRatio": 2}}},
+                                "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, 
                                 "grid": {"top": 80, "left": "1%", "right": "15%", "bottom": "5%", "containLabel": True},
                                 "xAxis": {"type": "value", "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}},
-                                "yAxis": {
-                                    "type": "category", 
-                                    "data": categorias_desp_lista, 
-                                    "axisLabel": {
-                                        "interval": 0, 
-                                        "width": 180, 
-                                        "overflow": "break", 
-                                        "lineHeight": 14,
-                                        "color": "#1A1C1E", 
-                                        "fontWeight": "bold"
-                                    }
-                                },
+                                "yAxis": {"type": "category", "data": categorias_desp_lista, "axisLabel": {"interval": 0, "width": 180, "overflow": "break", "lineHeight": 14, "color": "#1A1C1E", "fontWeight": "bold"}},
                                 "series": [{"type": "bar", "data": dados_barras_desp, "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}}]
                             }
                             st_echarts(options=bar_options_desp, height=f"{altura_dinamica_desp}px")
 
                 with aba_tab:
-                    titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value=titulo_customizado_grafico, key="titulo_tabela_input")
+                    st.write("💡 *Controle as colunas, arraste-as com o mouse para alterar a ordem e clique para baixar.*")
                     
-                    st.write("💡 *Controle as colunas, altere a ordem ao seu gosto e clique para baixar.*")
-                    
-                    # O NOVO MENU INTELIGENTE DE ORDENAÇÃO
                     colunas_disponiveis = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "DESPESA", "VALOR", "SITUAÇÃO"]
-                    
-                    # Configuração Padrão das colunas visíveis
                     colunas_padrao = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "VALOR", "SITUAÇÃO"]
                     
-                    colunas_selecionadas = st.multiselect(
-                        "⚙️ Selecione as colunas e a ordem desejada (Clique no X para remover e adicione na ordem que preferir):",
-                        options=colunas_disponiveis,
-                        default=colunas_padrao
-                    )
+                    if sort_items is not None:
+                        st.markdown("⚙️ **1. Escolha quais colunas exibir:**")
+                        colunas_ativas = st.multiselect("Oculte ou revele as colunas:", options=colunas_disponiveis, default=colunas_padrao, label_visibility="collapsed")
+                        
+                        if colunas_ativas:
+                            st.markdown("↕️ **2. Arraste as caixas abaixo para ordenar (Muda o visual e o PDF):**")
+                            colunas_selecionadas = sort_items(colunas_ativas, direction='vertical', key="ordenador_colunas")
+                        else: colunas_selecionadas = []
+                    else:
+                        colunas_selecionadas = st.multiselect("⚙️ Selecione as colunas e a ordem (Instale 'streamlit-sortables' no terminal para poder arrastar com o mouse!):", options=colunas_disponiveis, default=colunas_padrao)
                     
                     if not colunas_selecionadas:
                         colunas_selecionadas = ["RAZÃO SOCIAL / DESCRIÇÃO", "VALOR"] # Failsafe
@@ -646,7 +658,7 @@ if arquivos:
                     soma_total = tabela_final['VALOR'].sum()
                     soma_total_str = formatar_contabil(soma_total)
                     
-                    # MAPAS DE INJEÇÃO DINÂMICA (Incluindo Despesa limpa com "")
+                    # MAPAS DE INJEÇÃO DINÂMICA
                     mapa_pdf = {
                         "RAZÃO SOCIAL / DESCRIÇÃO": tabela_final['ENTIDADE'].tolist() + ["TOTAL GERAL"],
                         "DATA": tabela_final['DATA'].tolist() + ["-"],
@@ -670,14 +682,8 @@ if arquivos:
                     }
                     
                     mapa_larguras = {
-                        "RAZÃO SOCIAL / DESCRIÇÃO": 300,
-                        "DATA": 90,
-                        "DOCUMENTO": 90,
-                        "NOTA FISCAL": 90,
-                        "PARCELA": 80,
-                        "DESPESA": 130,
-                        "VALOR": 110,
-                        "SITUAÇÃO": 120
+                        "RAZÃO SOCIAL / DESCRIÇÃO": 300, "DATA": 90, "DOCUMENTO": 90, "NOTA FISCAL": 90,
+                        "PARCELA": 80, "DESPESA": 130, "VALOR": 110, "SITUAÇÃO": 120
                     }
                     
                     cols_pdf = {}
@@ -685,7 +691,6 @@ if arquivos:
                     celulas = []
                     larguras_colunas = []
                     
-                    # CONSTRÓI A TABELA EXATAMENTE NA ORDEM SELECIONADA
                     for col in colunas_selecionadas:
                         cols_pdf[col] = mapa_pdf[col]
                         cabecalhos.append(f"<b>{col}</b>")
@@ -695,10 +700,10 @@ if arquivos:
                     df_pdf = pd.DataFrame(cols_pdf)
 
                     if FPDF is not None:
-                        pdf_bytes = gerar_pdf_tabela(df_pdf, titulo_tabela)
-                        st.download_button(label="📄 Baixar Tabela em PDF", data=pdf_bytes, file_name=f"Detalhado_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True, key="btn_pdf_tabela")
+                        pdf_bytes = gerar_pdf_tabela(df_pdf, titulo_customizado_grafico + " (Tabela)", colunas_selecionadas, larguras_colunas)
+                        st.download_button(label="📄 Baixar Tabela em PDF isolada", data=pdf_bytes, file_name=f"Tabela_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True, key="btn_pdf_tabela")
                     else:
-                        st.error("⚠️ Biblioteca 'fpdf' não instalada. Atualize o ficheiro requirements.txt.")
+                        st.error("⚠️ Biblioteca 'fpdf' não instalada.")
 
                     cor_linhas_normais = '#F8F9FB'
                     cor_linha_total = '#D0D5DD'
@@ -709,36 +714,63 @@ if arquivos:
                     for cab in cabecalhos:
                         cab_up = cab.upper()
                         if "RAZÃO" in cab_up or "DESCRIÇÃO" in cab_up: alinhamentos_plotly.append('left')
-                        elif "DATA" in cab_up: alinhamentos_plotly.append('center')
-                        elif "DOC" in cab_up: alinhamentos_plotly.append('center')
-                        elif "NOTA" in cab_up or "NF" in cab_up: alinhamentos_plotly.append('center')
-                        elif "PARC" in cab_up: alinhamentos_plotly.append('center')
-                        elif "DESPESA" in cab_up: alinhamentos_plotly.append('center')
                         elif "VALOR" in cab_up: alinhamentos_plotly.append('right')
-                        elif "SITUAÇÃO" in cab_up: alinhamentos_plotly.append('center')
                         else: alinhamentos_plotly.append('center')
 
                     fig_table = go.Figure(data=[go.Table(
                         columnwidth=larguras_colunas,
                         header=dict(values=cabecalhos, fill_color='#111111', align=alinhamentos_plotly, font=dict(family='Calibri', color='white', size=13)),
-                        cells=dict(
-                            values=celulas, 
-                            fill_color=array_cores_fundo,
-                            align=alinhamentos_plotly, 
-                            font=dict(family='Calibri', color='#1A1C1E', size=12), 
-                            height=55 
-                        )
+                        cells=dict(values=celulas, fill_color=array_cores_fundo, align=alinhamentos_plotly, font=dict(family='Calibri', color='#1A1C1E', size=12), height=55)
                     )])
                     
                     fig_table.update_layout(
-                        title=dict(text=f"<b>{titulo_tabela}</b>", font=dict(family='Calibri', color='#111111', size=16)),
-                        margin=dict(l=0, r=0, b=0, t=40), 
-                        height=550, 
-                        paper_bgcolor='rgba(0,0,0,0)', 
-                        plot_bgcolor='rgba(0,0,0,0)'
+                        title=dict(text=f"<b>{titulo_customizado_grafico}</b>", font=dict(family='Calibri', color='#111111', size=16)),
+                        margin=dict(l=0, r=0, b=0, t=40), height=550, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
                     )
                     st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
+
+                with aba_rel:
+                    st.write("⚙️ **Monte o seu Relatório Completo**")
+                    st.write("Selecione quais os blocos e a ordem em que devem aparecer no PDF final (cada gráfico ocupará 1 página e a tabela ocupará o restante).")
                     
+                    opcoes_relatorio = [
+                        "Gráfico: Por Entidade (Padrão)",
+                        "Gráfico: Categorizado (Tipo Pagamento)",
+                        "Gráfico: Por Categoria de Despesa",
+                        "Tabela Detalhada"
+                    ]
+                    
+                    if sort_items is not None:
+                        ordem_relatorio = sort_items(opcoes_relatorio, direction='vertical', key="ordem_rel_pdf")
+                    else:
+                        ordem_relatorio = st.multiselect("Selecione e ordene os itens do relatório:", options=opcoes_relatorio, default=opcoes_relatorio)
+                        
+                    if ordem_relatorio:
+                        safe_title = re.sub(r'[^a-zA-Z0-9_\- ]', '', titulo_customizado_grafico).strip().replace(" ", "_")
+                        if not safe_title: safe_title = "Relatorio_JNL"
+                        file_name_final = f"{safe_title}.pdf"
+                        
+                        if FPDF is not None:
+                            pdf_relatorio = PDFReport()
+                            
+                            for item in ordem_relatorio:
+                                if item == "Gráfico: Por Entidade (Padrão)" and not dados_grafico_ent.empty:
+                                    append_pdf_ranking(pdf_relatorio, dados_grafico_ent, f"{titulo_customizado_grafico} - Entidades")
+                                elif item == "Gráfico: Categorizado (Tipo Pagamento)" and not dados_grafico_cat.empty:
+                                    append_pdf_ranking(pdf_relatorio, dados_grafico_cat, f"{titulo_customizado_grafico} - Pagamentos")
+                                elif item == "Gráfico: Por Categoria de Despesa" and not dados_grafico_desp.empty:
+                                    append_pdf_ranking(pdf_relatorio, dados_grafico_desp, f"{titulo_customizado_grafico} - Despesas")
+                                elif item == "Tabela Detalhada" and not df_pdf.empty:
+                                    append_pdf_tabela(pdf_relatorio, df_pdf, f"{titulo_customizado_grafico} - Detalhado", colunas_selecionadas, larguras_colunas)
+                                    
+                            res = pdf_relatorio.output(dest='S')
+                            if isinstance(res, str): pdf_bytes = res.encode('latin-1')
+                            else: pdf_bytes = bytes(res)
+                            
+                            st.download_button(label="🚀 Baixar Relatório Completo (PDF)", data=pdf_bytes, file_name=file_name_final, mime="application/pdf", use_container_width=True, key="btn_relatorio_completo")
+                        else:
+                            st.error("⚠️ Biblioteca 'fpdf' não instalada.")
+                            
             else: st.info("Todos os valores encontrados estão zerados no período selecionado.")
         else: st.warning("⚠️ Nenhuma data válida encontrada no ficheiro. Verifique a coluna de datas.")
 else: st.info("Aguardando o envio da planilha...")
