@@ -284,7 +284,76 @@ if FPDF is not None:
                 
             pdf.set_xy(start_x, start_y + h_linha)
 
-    # MOTOR QUE GERA A IMAGEM DO GRÁFICO REAL PARA O PDF
+    def append_pdf_ranking(pdf, df, titulo):
+        pdf.add_page()
+        if titulo:
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
+            pdf.ln(5)
+        
+        pdf.set_fill_color(17, 17, 17)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", 'B', 9)
+        widths = [20, 120, 50]
+        
+        df_ord = df.copy() 
+        col_nome_dinamico = str(df_ord.columns[0]).upper()
+        col_valor_dinamico = df_ord.columns[1]
+        
+        colunas = ["POS.", col_nome_dinamico, "VALOR TOTAL"]
+        for i, col in enumerate(colunas):
+            pdf.cell(widths[i], 8, limpar_texto(col), border=1, fill=True, align='C')
+        pdf.ln()
+        
+        pdf.set_text_color(26, 28, 30)
+        pdf.set_font("Arial", '', 8)
+        line_height = 5
+        
+        for i, row in df_ord.iterrows():
+            pos = f"{i + 1}."
+            nome = limpar_texto(row[df_ord.columns[0]]) 
+            valor = f"R$ {row[col_valor_dinamico]:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            linha_dados = [pos, nome, valor]
+            
+            max_linhas = 1
+            for j, item in enumerate(linha_dados):
+                linhas = obter_linhas_reais(pdf, widths[j], item)
+                if linhas > max_linhas:
+                    max_linhas = linhas
+                    
+            h_linha = (max_linhas * line_height) + 2
+            
+            if pdf.get_y() + h_linha > 275:
+                pdf.add_page()
+                pdf.set_fill_color(17, 17, 17)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_font("Arial", 'B', 9)
+                for j, col in enumerate(colunas):
+                    pdf.cell(widths[j], 8, limpar_texto(col), border=1, fill=True, align='C')
+                pdf.ln()
+                pdf.set_text_color(26, 28, 30)
+                pdf.set_font("Arial", '', 8)
+                
+            start_x = pdf.get_x()
+            start_y = pdf.get_y()
+            
+            for j, item in enumerate(linha_dados):
+                w = widths[j]
+                x = start_x + sum(widths[:j])
+                y = start_y
+                
+                pdf.rect(x, y, w, h_linha, 'D')
+                
+                linhas_deste_texto = obter_linhas_reais(pdf, w, item)
+                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
+                
+                pdf.set_xy(x, offset_y)
+                
+                align_h = 'C' if j == 0 else ('L' if j == 1 else 'R')
+                pdf.multi_cell(w, line_height, item, border=0, align=align_h)
+                
+            pdf.set_xy(start_x, start_y + h_linha)
+
     def append_pdf_grafico_imagem(pdf, df, titulo, col_nome, col_valor):
         pdf.add_page()
         if titulo:
@@ -293,17 +362,13 @@ if FPDF is not None:
             pdf.ln(5)
             
         if plt is not None and tempfile is not None:
-            # Limita a 25 itens para o gráfico do PDF não esmagar e ficar elegante na folha A4
             df_plot = df.sort_values(by=col_valor, ascending=True).tail(25)
-            
             fig, ax = plt.subplots(figsize=(10, max(5, len(df_plot) * 0.4)))
             
             nomes_limpos = df_plot[col_nome].astype(str).apply(lambda x: (x[:35] + '...') if len(x) > 35 else x)
             ax.barh(nomes_limpos, df_plot[col_valor], color='#111111', height=0.6)
             
-            for spine in ['top', 'right', 'bottom']:
-                ax.spines[spine].set_visible(False)
-            
+            for spine in ['top', 'right', 'bottom']: ax.spines[spine].set_visible(False)
             ax.xaxis.set_visible(False)
             ax.tick_params(axis='y', length=0, labelsize=9)
             
@@ -313,21 +378,14 @@ if FPDF is not None:
                 ax.text(value + (max_val * 0.01), index, val_str, va='center', fontsize=9, fontweight='bold', color='#111111')
                 
             plt.tight_layout()
-            
             tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
             plt.savefig(tmpfile.name, format='png', dpi=200, bbox_inches='tight', facecolor='#FFFFFF')
             plt.close(fig)
             
-            # Insere a imagem no PDF preservando proporções
             pdf.image(tmpfile.name, x=10, y=pdf.get_y(), w=190)
-            
-            # Apaga a imagem temporária
-            try:
-                os.remove(tmpfile.name)
-            except:
-                pass
+            try: os.remove(tmpfile.name)
+            except: pass
         else:
-            # Fallback se matplotlib falhar (gera apenas o texto como aviso)
             pdf.set_font("Arial", '', 10)
             pdf.multi_cell(0, 10, "Aviso: Biblioteca 'matplotlib' nao instalada. Rode 'pip install matplotlib' para exibir os graficos visuais no PDF.", align='C')
 
@@ -605,30 +663,26 @@ if arquivos:
                             st_echarts(options=bar_options_desp, height=f"{altura_dinamica_desp}px")
 
                 with aba_tab:
-                    st.write("💡 *Controle as colunas, arraste-as com o mouse para alterar a ordem e clique para baixar.*")
+                    titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value=titulo_customizado_grafico, key="titulo_tabela_input")
+                    st.write("💡 *Para remover uma coluna, clique no 'X'. Para mudar a ordem no PDF, arraste as caixas horizontalmente.*")
                     
                     colunas_disponiveis = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "DESPESA", "VALOR", "SITUAÇÃO"]
                     colunas_padrao = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "VALOR", "SITUAÇÃO"]
                     
-                    if sort_items is not None:
-                        st.markdown("⚙️ **1. Escolha quais colunas exibir:**")
-                        colunas_ativas = st.multiselect("Oculte ou revele as colunas:", options=colunas_disponiveis, default=colunas_padrao, label_visibility="collapsed")
-                        
-                        if colunas_ativas:
-                            st.markdown("↕️ **2. Arraste as caixas abaixo para ordenar (Muda o visual e o PDF):**")
-                            # ESTRUTURA BLINDADA PARA NUNCA CORTAR NOMES (Lista plana)
-                            res_sort_colunas = sort_items(colunas_ativas, direction='vertical', key="ordenador_colunas")
-                            colunas_selecionadas = res_sort_colunas if res_sort_colunas else colunas_ativas
-                        else: colunas_selecionadas = []
+                    # O "X" para remover está aqui (Multiselect padrão do Streamlit)
+                    colunas_ativas = st.multiselect("Adicionar / Remover Colunas:", options=colunas_disponiveis, default=colunas_padrao, label_visibility="collapsed")
+                    
+                    # O Arrastar e Soltar Horizontal está aqui
+                    if sort_items is not None and colunas_ativas:
+                        colunas_selecionadas = sort_items(colunas_ativas, direction='horizontal', key="ordenador_colunas")
                     else:
-                        colunas_selecionadas = st.multiselect("⚙️ Selecione as colunas e a ordem (Instale 'streamlit-sortables' no terminal para poder arrastar com o mouse!):", options=colunas_disponiveis, default=colunas_padrao)
+                        colunas_selecionadas = colunas_ativas
                     
                     if not colunas_selecionadas:
                         colunas_selecionadas = ["RAZÃO SOCIAL / DESCRIÇÃO", "VALOR"] # Failsafe
 
                     tabela_final = dados_tabela.copy()
                     tabela_final['VALOR_STR'] = tabela_final['VALOR'].apply(formatar_contabil)
-                    
                     soma_total = tabela_final['VALOR'].sum()
                     soma_total_str = formatar_contabil(soma_total)
                     
@@ -642,7 +696,6 @@ if arquivos:
                         "VALOR": tabela_final['VALOR_STR'].tolist() + [soma_total_str],
                         "SITUAÇÃO": tabela_final['STATUS'].tolist() + ["-"]
                     }
-                    
                     mapa_visual = {
                         "RAZÃO SOCIAL / DESCRIÇÃO": tabela_final['ENTIDADE'].tolist() + ["<b>TOTAL GERAL</b>"],
                         "DATA": tabela_final['DATA'].tolist() + ["<b>-</b>"],
@@ -653,7 +706,6 @@ if arquivos:
                         "VALOR": tabela_final['VALOR_STR'].tolist() + [f"<b>{soma_total_str}</b>"],
                         "SITUAÇÃO": tabela_final['STATUS'].tolist() + ["<b>-</b>"]
                     }
-                    
                     mapa_larguras = {
                         "RAZÃO SOCIAL / DESCRIÇÃO": 300, "DATA": 90, "DOCUMENTO": 90, "NOTA FISCAL": 90,
                         "PARCELA": 80, "DESPESA": 130, "VALOR": 110, "SITUAÇÃO": 120
@@ -672,6 +724,12 @@ if arquivos:
                         
                     df_pdf = pd.DataFrame(cols_pdf)
 
+                    if FPDF is not None:
+                        pdf_bytes = gerar_pdf_tabela(df_pdf, titulo_customizado_grafico + " (Tabela)", colunas_selecionadas, larguras_colunas)
+                        st.download_button(label="📄 Baixar Tabela em PDF isolada", data=pdf_bytes, file_name=f"Tabela_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True, key="btn_pdf_tabela")
+                    else:
+                        st.error("⚠️ Biblioteca 'fpdf' não instalada.")
+
                     cor_linhas_normais = '#F8F9FB'
                     cor_linha_total = '#D0D5DD'
                     cores_tabela = [cor_linhas_normais] * len(tabela_final) + [cor_linha_total]
@@ -689,7 +747,6 @@ if arquivos:
                         header=dict(values=cabecalhos, fill_color='#111111', align=alinhamentos_plotly, font=dict(family='Calibri', color='white', size=13)),
                         cells=dict(values=celulas, fill_color=array_cores_fundo, align=alinhamentos_plotly, font=dict(family='Calibri', color='#1A1C1E', size=12), height=55)
                     )])
-                    
                     fig_table.update_layout(
                         title=dict(text=f"<b>{titulo_customizado_grafico}</b>", font=dict(family='Calibri', color='#111111', size=16)),
                         margin=dict(l=0, r=0, b=0, t=40), height=550, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
@@ -698,7 +755,7 @@ if arquivos:
 
                 with aba_rel:
                     st.write("⚙️ **Monte o seu Relatório Completo**")
-                    st.write("Selecione quais os blocos e a ordem em que devem aparecer no PDF final (cada gráfico ocupará 1 página e a tabela ocupará o restante).")
+                    st.write("💡 *Clique no 'X' para remover uma página. Arraste horizontalmente para mudar a ordem das páginas no PDF.*")
                     
                     opcoes_relatorio = [
                         "Gráfico: Por Entidade (Padrão)",
@@ -707,12 +764,12 @@ if arquivos:
                         "Tabela Detalhada"
                     ]
                     
-                    if sort_items is not None:
-                        # ESTRUTURA BLINDADA PARA NUNCA CORTAR NOMES (Lista plana)
-                        res_rel = sort_items(opcoes_relatorio, direction='vertical', key="ordem_rel_pdf")
-                        ordem_relatorio = res_rel if res_rel else opcoes_relatorio
+                    itens_ativos = st.multiselect("Adicionar / Remover Páginas:", options=opcoes_relatorio, default=opcoes_relatorio, label_visibility="collapsed")
+                    
+                    if sort_items is not None and itens_ativos:
+                        ordem_relatorio = sort_items(itens_ativos, direction='horizontal', key="ordem_rel_pdf")
                     else:
-                        ordem_relatorio = st.multiselect("Selecione e ordene os itens do relatório:", options=opcoes_relatorio, default=opcoes_relatorio)
+                        ordem_relatorio = itens_ativos
                         
                     if ordem_relatorio:
                         safe_title = limpar_nome_arquivo(titulo_customizado_grafico)
@@ -723,15 +780,14 @@ if arquivos:
                             pdf_relatorio = PDFReport()
                             
                             for item in ordem_relatorio:
-                                # O sistema Matplotlib criará a imagem exata do gráfico para o PDF!
                                 if item == "Gráfico: Por Entidade (Padrão)" and not dados_grafico_ent.empty:
-                                    append_pdf_grafico_imagem(pdf_relatorio, dados_grafico_ent, f"{titulo_customizado_grafico} - {item}", 'ENTIDADE', 'VALOR')
+                                    append_pdf_grafico_imagem(pdf_relatorio, dados_grafico_ent, f"{titulo_customizado_grafico} - Entidades", 'ENTIDADE', 'VALOR')
                                 elif item == "Gráfico: Categorizado (Por Tipo de Pagamento)" and not dados_grafico_cat.empty:
-                                    append_pdf_grafico_imagem(pdf_relatorio, dados_grafico_cat, f"{titulo_customizado_grafico} - {item}", 'CATEGORIA', 'VALOR')
+                                    append_pdf_grafico_imagem(pdf_relatorio, dados_grafico_cat, f"{titulo_customizado_grafico} - Pagamentos", 'CATEGORIA', 'VALOR')
                                 elif item == "Gráfico: Por Categoria de Despesa" and not dados_grafico_desp.empty:
-                                    append_pdf_grafico_imagem(pdf_relatorio, dados_grafico_desp, f"{titulo_customizado_grafico} - {item}", 'DESPESA', 'VALOR')
+                                    append_pdf_grafico_imagem(pdf_relatorio, dados_grafico_desp, f"{titulo_customizado_grafico} - Despesas", 'DESPESA', 'VALOR')
                                 elif item == "Tabela Detalhada" and not df_pdf.empty:
-                                    append_pdf_tabela(pdf_relatorio, df_pdf, f"{titulo_customizado_grafico} - {item}", colunas_selecionadas, larguras_colunas)
+                                    append_pdf_tabela(pdf_relatorio, df_pdf, f"{titulo_customizado_grafico} - Detalhado", colunas_selecionadas, larguras_colunas)
                                     
                             res = pdf_relatorio.output(dest='S')
                             if isinstance(res, str): pdf_bytes = res.encode('latin-1')
