@@ -283,110 +283,69 @@ if FPDF is not None:
                 
             pdf.set_xy(start_x, start_y + h_linha)
 
-    def append_pdf_ranking(pdf, df, titulo):
-        pdf.add_page()
-        if titulo:
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
-            pdf.ln(5)
-        
-        pdf.set_fill_color(17, 17, 17)
-        pdf.set_text_color(255, 255, 255)
-        pdf.set_font("Arial", 'B', 9)
-        widths = [20, 120, 50]
-        
-        df_ord = df.copy() 
-        col_nome_dinamico = str(df_ord.columns[0]).upper()
-        col_valor_dinamico = df_ord.columns[1]
-        
-        colunas = ["POS.", col_nome_dinamico, "VALOR TOTAL"]
-        for i, col in enumerate(colunas):
-            pdf.cell(widths[i], 8, limpar_texto(col), border=1, fill=True, align='C')
-        pdf.ln()
-        
-        pdf.set_text_color(26, 28, 30)
-        pdf.set_font("Arial", '', 8)
-        line_height = 5
-        
-        for i, row in df_ord.iterrows():
-            pos = f"{i + 1}."
-            nome = limpar_texto(row[df_ord.columns[0]]) 
-            valor = f"R$ {row[col_valor_dinamico]:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            linha_dados = [pos, nome, valor]
-            
-            max_linhas = 1
-            for j, item in enumerate(linha_dados):
-                linhas = obter_linhas_reais(pdf, widths[j], item)
-                if linhas > max_linhas:
-                    max_linhas = linhas
-                    
-            h_linha = (max_linhas * line_height) + 2
-            
-            if pdf.get_y() + h_linha > 275:
-                pdf.add_page()
-                pdf.set_fill_color(17, 17, 17)
-                pdf.set_text_color(255, 255, 255)
-                pdf.set_font("Arial", 'B', 9)
-                for j, col in enumerate(colunas):
-                    pdf.cell(widths[j], 8, limpar_texto(col), border=1, fill=True, align='C')
-                pdf.ln()
-                pdf.set_text_color(26, 28, 30)
-                pdf.set_font("Arial", '', 8)
-                
-            start_x = pdf.get_x()
-            start_y = pdf.get_y()
-            
-            for j, item in enumerate(linha_dados):
-                w = widths[j]
-                x = start_x + sum(widths[:j])
-                y = start_y
-                
-                pdf.rect(x, y, w, h_linha, 'D')
-                
-                linhas_deste_texto = obter_linhas_reais(pdf, w, item)
-                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
-                
-                pdf.set_xy(x, offset_y)
-                
-                align_h = 'C' if j == 0 else ('L' if j == 1 else 'R')
-                pdf.multi_cell(w, line_height, item, border=0, align=align_h)
-                
-            pdf.set_xy(start_x, start_y + h_linha)
-
     def append_pdf_grafico_imagem(pdf, df, titulo, col_nome, col_valor):
-        pdf.add_page()
-        if titulo:
-            pdf.set_font("Arial", 'B', 14)
-            pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
-            pdf.ln(5)
-            
         if plt is not None and tempfile is not None:
-            df_plot = df.sort_values(by=col_valor, ascending=True).tail(25)
-            fig, ax = plt.subplots(figsize=(10, max(5, len(df_plot) * 0.4)))
+            # Ordenar do maior para o menor
+            df_sorted = df.sort_values(by=col_valor, ascending=False).reset_index(drop=True)
             
-            nomes_limpos = df_plot[col_nome].astype(str).apply(lambda x: (x[:35] + '...') if len(x) > 35 else x)
-            ax.barh(nomes_limpos, df_plot[col_valor], color='#111111', height=0.6)
+            # NOVIDADE: Cortar em pedaços de no máximo 15 para não esmagar
+            chunk_size = 15
+            chunks = [df_sorted[i:i + chunk_size] for i in range(0, len(df_sorted), chunk_size)]
             
-            for spine in ['top', 'right', 'bottom']: ax.spines[spine].set_visible(False)
-            ax.xaxis.set_visible(False)
-            ax.tick_params(axis='y', length=0, labelsize=9)
-            
-            max_val = df_plot[col_valor].max()
-            ax.set_xlim(0, max_val * 1.25)
-            
-            for index, value in enumerate(df_plot[col_valor]):
-                val_str = f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                ax.text(value + (max_val * 0.02), index, val_str, va='center', fontsize=9, fontweight='bold', color='#111111')
+            for idx, chunk in enumerate(chunks):
+                pdf.add_page()
                 
-            plt.tight_layout()
-            tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
-            plt.savefig(tmpfile.name, format='png', dpi=200, bbox_inches='tight', facecolor='#FFFFFF')
-            plt.close(fig)
-            
-            pdf.image(tmpfile.name, x=10, y=pdf.get_y(), w=190)
-            try: os.remove(tmpfile.name)
-            except: pass
+                # Título no topo
+                if titulo:
+                    pdf.set_font("Arial", 'B', 14)
+                    titulo_final = titulo + (f" (Parte {idx+1})" if len(chunks) > 1 else "")
+                    pdf.cell(0, 10, limpar_texto(titulo_final), 0, 1, 'C')
+                    pdf.ln(10) # Espaçamento depois do título
+                
+                # Inverter a ordem apenas no chunk para que o Matplotlib desenhe o maior no topo
+                chunk_plot = chunk.iloc[::-1]
+                
+                # Altura dinâmica controlada para o gráfico
+                fig_height = max(4, len(chunk_plot) * 0.6)
+                fig, ax = plt.subplots(figsize=(10, fig_height))
+                
+                # Limite de 45 caracteres no texto para não ocupar a tela toda
+                nomes_limpos = chunk_plot[col_nome].astype(str).apply(lambda x: (x[:45] + '...') if len(x) > 45 else x)
+                ax.barh(nomes_limpos, chunk_plot[col_valor], color='#111111', height=0.6)
+                
+                # Limpar bordas
+                for spine in ['top', 'right', 'bottom', 'left']: 
+                    ax.spines[spine].set_visible(False)
+                ax.xaxis.set_visible(False)
+                ax.tick_params(axis='y', length=0, labelsize=10)
+                
+                # NOVIDADE: Forçar 35% de margem extra para os números grandes caberem sem voar da tela
+                max_val = chunk_plot[col_valor].max()
+                ax.set_xlim(0, max_val * 1.35)
+                
+                for index, value in enumerate(chunk_plot[col_valor]):
+                    val_str = f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                    ax.text(value + (max_val * 0.02), index, val_str, va='center', fontsize=10, fontweight='bold', color='#111111')
+                    
+                plt.tight_layout()
+                tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+                plt.savefig(tmpfile.name, format='png', dpi=200, bbox_inches='tight', facecolor='#FFFFFF')
+                plt.close(fig)
+                
+                # NOVIDADE: Centralizar verticalmente no meio da página A4
+                # Se tem poucos itens, empurra a imagem mais para baixo
+                y_pos = max(pdf.get_y() + 10, 148 - (len(chunk_plot) * 5))
+                
+                pdf.image(tmpfile.name, x=10, y=y_pos, w=190)
+                
+                try: os.remove(tmpfile.name)
+                except: pass
         else:
+            pdf.add_page()
+            if titulo:
+                pdf.set_font("Arial", 'B', 14)
+                pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
+                pdf.ln(5)
             pdf.set_font("Arial", '', 10)
             pdf.multi_cell(0, 10, "Aviso: Biblioteca 'matplotlib' nao instalada. Rode 'pip install matplotlib' para exibir os graficos visuais no PDF.", align='C')
 
@@ -562,6 +521,7 @@ if arquivos:
             comando_filtro = st.text_input("💬 Filtro de pesquisa...", placeholder="Ex: IMPORPECAS, KS MAQUINAS...")
             if comando_filtro: df_filtrado = df_filtrado[df_filtrado['ENTIDADE'].str.contains(comando_filtro.strip().upper(), case=False, na=False)]
 
+            # PREPARAÇÃO DOS DADOS DOS GRÁFICOS
             dados_grafico_ent = df_filtrado.groupby('ENTIDADE')['VALOR'].sum().reset_index().sort_values(by='VALOR', ascending=False)
             dados_grafico_ent = dados_grafico_ent[dados_grafico_ent['VALOR'] > 0]
             
@@ -664,13 +624,12 @@ if arquivos:
 
                 with aba_tab:
                     titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value=titulo_customizado_grafico, key="titulo_tabela_input")
-                    st.write("💡 *Controle as colunas: Arraste para cima para incluir/ordenar, arraste para baixo para excluir.*")
+                    st.write("💡 *Controle as colunas: Arraste para a caixa superior para incluir/ordenar, arraste para a inferior para remover da tela.*")
                     
                     col_ativas_padrao = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "VALOR", "SITUAÇÃO"]
                     col_ocultas_padrao = ["DESPESA"]
                     
                     if sort_items is not None:
-                        # CAIXA FORTE DA SESSÃO PARA A TABELA (Prevenindo Error 185)
                         if "estado_colunas" not in st.session_state:
                             st.session_state["estado_colunas"] = [
                                 {'header': '✅ COLUNAS NA TELA E NO PDF (Arraste p/ ordenar)', 'items': col_ativas_padrao},
@@ -766,7 +725,7 @@ if arquivos:
                     st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
 
                 with aba_rel:
-                    st.write("⚙️ **Monte o seu Relatório Completo:** Arraste as páginas para a caixa superior para incluir no PDF.")
+                    st.write("⚙️ **Monte o seu Relatório Completo:** Arraste as páginas para a caixa de cima para incluir no PDF.")
                     
                     opcoes_relatorio = [
                         "Gráfico: Por Entidade (Padrão)",
@@ -776,7 +735,6 @@ if arquivos:
                     ]
                     
                     if sort_items is not None:
-                        # CAIXA FORTE DA SESSÃO PARA O RELATÓRIO (Prevenindo Error 185)
                         if "estado_relatorio" not in st.session_state:
                             st.session_state["estado_relatorio"] = [
                                 {'header': '✅ INCLUIR NO PDF (Arraste p/ ordenar)', 'items': opcoes_relatorio},
