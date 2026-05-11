@@ -32,6 +32,7 @@ st.set_page_config(page_title="RELATORIADOR", page_icon="🛡️", layout="wide"
 # --- DESIGN PREMIUM CLEAN (B&W) ---
 st.markdown("""
     <style>
+    /* Fonte Calibri exigida pelo Senhor */
     html, body, [class*="css"] { font-family: 'Calibri', sans-serif; }
     .main { background-color: #F8F9FB; }
     [data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E0E4E8; }
@@ -670,13 +671,13 @@ if arquivos:
                     if sort_items is not None:
                         st.markdown("⚙️ **Organize as Colunas:** Arraste para a caixa de cima para incluir e ordenar. Arraste para a caixa de baixo para excluir do PDF.")
                         
-                        # O MOTOR DIVIDIDO EM DUAS CAIXAS VERTICAIS (Sem botão X duplicado)
+                        # MOTOR BLINDADO DE ARRASTAR (AGORA COM MULTI_CONTAINERS=TRUE)
                         sort_data_colunas = [
                             {'header': '✅ COLUNAS NO PDF E NA TELA (Arraste para ordenar)', 'items': col_ativas_padrao},
                             {'header': '❌ COLUNAS OCULTAS (Arraste para cá para remover)', 'items': col_ocultas_padrao}
                         ]
                         
-                        res_sort_colunas = sort_items(sort_data_colunas, direction='vertical', key="ordenador_colunas")
+                        res_sort_colunas = sort_items(sort_data_colunas, multi_containers=True, direction='vertical', key="ordenador_colunas")
                         colunas_selecionadas = res_sort_colunas[0]['items'] if res_sort_colunas else col_ativas_padrao
                     else:
                         st.info("⚠️ Instale 'streamlit-sortables' no terminal para ativar o modo arrastar e soltar.")
@@ -772,11 +773,12 @@ if arquivos:
                     ]
                     
                     if sort_items is not None:
+                        # MOTOR BLINDADO DE ARRASTAR (AGORA COM MULTI_CONTAINERS=TRUE)
                         sort_data_rel = [
                             {'header': '✅ INCLUIR NO PDF (Arraste para ordenar)', 'items': opcoes_relatorio},
                             {'header': '❌ NÃO INCLUIR', 'items': []}
                         ]
-                        res_rel = sort_items(sort_data_rel, direction='vertical', key="ordem_rel_pdf")
+                        res_rel = sort_items(sort_data_rel, multi_containers=True, direction='vertical', key="ordem_rel_pdf")
                         ordem_relatorio = res_rel[0]['items'] if res_rel else opcoes_relatorio
                     else:
                         ordem_relatorio = opcoes_relatorio
