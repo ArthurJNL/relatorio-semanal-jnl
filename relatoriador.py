@@ -281,6 +281,76 @@ if FPDF is not None:
         if isinstance(res, str): return res.encode('latin-1')
         return bytes(res)
 
+    def gerar_pdf_ranking(df, titulo):
+        pdf = PDFReport()
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
+        pdf.ln(5)
+        
+        pdf.set_fill_color(17, 17, 17)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", 'B', 9)
+        widths = [20, 120, 50]
+        colunas = ["POS.", "RAZÃO SOCIAL / DESCRIÇÃO", "VALOR TOTAL"]
+        for i, col in enumerate(colunas):
+            pdf.cell(widths[i], 8, col, border=1, fill=True, align='C')
+        pdf.ln()
+        
+        pdf.set_text_color(26, 28, 30)
+        pdf.set_font("Arial", '', 8)
+        line_height = 5
+        df_ord = df.sort_values(by='VALOR', ascending=False).reset_index(drop=True)
+        
+        for i, row in df_ord.iterrows():
+            pos = f"{i + 1}."
+            nome = limpar_texto(row['ENTIDADE']) 
+            valor = f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            linha_dados = [pos, nome, valor]
+            
+            max_linhas = 1
+            for j, item in enumerate(linha_dados):
+                linhas = obter_linhas_reais(pdf, widths[j], item)
+                if linhas > max_linhas:
+                    max_linhas = linhas
+                    
+            h_linha = (max_linhas * line_height) + 2
+            
+            if pdf.get_y() + h_linha > 275:
+                pdf.add_page()
+                pdf.set_fill_color(17, 17, 17)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_font("Arial", 'B', 9)
+                for j, col in enumerate(colunas):
+                    pdf.cell(widths[j], 8, col, border=1, fill=True, align='C')
+                pdf.ln()
+                pdf.set_text_color(26, 28, 30)
+                pdf.set_font("Arial", '', 8)
+                
+            start_x = pdf.get_x()
+            start_y = pdf.get_y()
+            
+            for j, item in enumerate(linha_dados):
+                w = widths[j]
+                x = start_x + sum(widths[:j])
+                y = start_y
+                
+                pdf.rect(x, y, w, h_linha, 'D')
+                
+                linhas_deste_texto = obter_linhas_reais(pdf, w, item)
+                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
+                
+                pdf.set_xy(x, offset_y)
+                
+                align_h = 'C' if j == 0 else ('L' if j == 1 else 'R')
+                pdf.multi_cell(w, line_height, item, border=0, align=align_h)
+                
+            pdf.set_xy(start_x, start_y + h_linha)
+            
+        res = pdf.output(dest='S')
+        if isinstance(res, str): return res.encode('latin-1')
+        return bytes(res)
+
 # --- INTERFACE SIDEBAR ---
 with st.sidebar:
     st.title("🛡️ RELATORIADOR")
@@ -496,7 +566,7 @@ if arquivos:
                         st_echarts(options=bar_options, height=f"{altura_dinamica}px")
                         
                     else:
-                        # LÓGICA DE CATEGORIZAÇÃO
+                        # LÓGICA DE CATEGORIZAÇÃO (Agrupamento Simples)
                         def categorizar_pagamento(d):
                             d = str(d).upper()
                             if 'BOLETO' in d: return 'Boleto'
@@ -508,23 +578,15 @@ if arquivos:
                         df_cat = df_filtrado.copy()
                         df_cat['CATEGORIA'] = df_cat['DOCUMENTO'].apply(categorizar_pagamento)
                         
-                        # Empilhamento dos Clientes por Categoria
-                        pivot_df = df_cat.pivot_table(index='CATEGORIA', columns='ENTIDADE', values='VALOR', aggfunc='sum').fillna(0)
-                        categorias_lista = pivot_df.index.tolist()
+                        # Soma total por categoria (sem dividir por clientes)
+                        dados_grafico_cat = df_cat.groupby('CATEGORIA')['VALOR'].sum().reset_index()
+                        dados_grafico_cat = dados_grafico_cat[dados_grafico_cat['VALOR'] > 0].sort_values(by='VALOR', ascending=True)
                         
-                        series_cat = []
-                        for col in pivot_df.columns:
-                            valores_col = pivot_df[col].tolist()
-                            if sum(valores_col) > 0:
-                                series_cat.append({
-                                    "name": str(col),
-                                    "type": "bar",
-                                    "stack": "total",
-                                    "itemStyle": {"borderRadius": 0},
-                                    "data": valores_col
-                                })
+                        categorias_lista = dados_grafico_cat['CATEGORIA'].tolist()
                         
-                        altura_dinamica_cat = max(500, len(categorias_lista) * 80)
+                        dados_barras_cat = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_grafico_cat.iterrows()]
+                        
+                        altura_dinamica_cat = max(400, len(categorias_lista) * 80)
                         
                         bar_options_cat = {
                             "backgroundColor": "transparent",
@@ -541,18 +603,17 @@ if arquivos:
                                 }
                             },
                             "tooltip": {
-                                "trigger": "item",
-                                "formatter": "{a} <br/><b>{b}</b>: R$ {c}"
+                                "trigger": "axis",
+                                "axisPointer": {"type": "shadow"}
                             }, 
-                            "legend": {"type": "scroll", "bottom": 0},
-                            "grid": {"top": 80, "left": "1%", "right": "5%", "bottom": "15%", "containLabel": True},
+                            "grid": {"top": 80, "left": "1%", "right": "15%", "bottom": "5%", "containLabel": True},
                             "xAxis": {"type": "value", "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}},
                             "yAxis": {
                                 "type": "category", 
                                 "data": categorias_lista, 
                                 "axisLabel": {"color": "#1A1C1E", "fontWeight": "bold"}
                             },
-                            "series": series_cat
+                            "series": [{"type": "bar", "data": dados_barras_cat, "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}}]
                         }
                         st_echarts(options=bar_options_cat, height=f"{altura_dinamica_cat}px")
 
