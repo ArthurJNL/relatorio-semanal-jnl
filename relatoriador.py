@@ -7,6 +7,7 @@ import math
 import unicodedata
 import re
 import os
+import uuid
 
 # --- MOTORES EXTERNOS ---
 try:
@@ -284,70 +285,123 @@ if FPDF is not None:
                 
             pdf.set_xy(start_x, start_y + h_linha)
 
-    def append_pdf_grafico_imagem(pdf, df, titulo, col_nome, col_valor):
-        if plt is not None and tempfile is not None:
-            df_sorted = df.sort_values(by=col_valor, ascending=False).reset_index(drop=True)
+    def append_pdf_ranking(pdf, df, titulo):
+        pdf.add_page()
+        if titulo:
+            pdf.set_font("Arial", 'B', 12)
+            pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
+            pdf.ln(5)
+        
+        pdf.set_fill_color(17, 17, 17)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", 'B', 9)
+        widths = [20, 120, 50]
+        
+        df_ord = df.copy() 
+        col_nome_dinamico = str(df_ord.columns[0]).upper()
+        col_valor_dinamico = df_ord.columns[1]
+        
+        colunas = ["POS.", col_nome_dinamico, "VALOR TOTAL"]
+        for i, col in enumerate(colunas):
+            pdf.cell(widths[i], 8, limpar_texto(col), border=1, fill=True, align='C')
+        pdf.ln()
+        
+        pdf.set_text_color(26, 28, 30)
+        pdf.set_font("Arial", '', 8)
+        line_height = 5
+        
+        for i, row in df_ord.iterrows():
+            pos = f"{i + 1}."
+            nome = limpar_texto(row[df_ord.columns[0]]) 
+            valor = f"R$ {row[col_valor_dinamico]:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            linha_dados = [pos, nome, valor]
             
-            # CORTAR EM PÁGINAS DE NO MÁXIMO 15 ITENS PARA NÃO ESMAGAR
-            chunk_size = 15
-            chunks = [df_sorted[i:i + chunk_size] for i in range(0, len(df_sorted), chunk_size)]
-            
-            for idx, chunk in enumerate(chunks):
-                pdf.add_page()
-                
-                if titulo:
-                    pdf.set_font("Arial", 'B', 14)
-                    titulo_final = titulo + (f" (Parte {idx+1})" if len(chunks) > 1 else "")
-                    pdf.cell(0, 10, limpar_texto(titulo_final), 0, 1, 'C')
-                    pdf.ln(10) 
-                
-                # Reseta o index do chunk e inverte para o Matplotlib desenhar do maior para o menor
-                chunk_plot = chunk.iloc[::-1].reset_index(drop=True)
-                
-                fig_height = max(4, len(chunk_plot) * 0.6)
-                fig, ax = plt.subplots(figsize=(10, fig_height))
-                
-                nomes_limpos = chunk_plot[col_nome].astype(str).apply(lambda x: (x[:45] + '...') if len(x) > 45 else x)
-                
-                # BLINDAGEM CONTRA NOMES DUPLICADOS (Impede o erro que misturava as barras)
-                y_positions = range(len(chunk_plot))
-                ax.barh(y_positions, chunk_plot[col_valor], color='#111111', height=0.6)
-                ax.set_yticks(y_positions)
-                ax.set_yticklabels(nomes_limpos)
-                
-                for spine in ['top', 'right', 'bottom', 'left']: ax.spines[spine].set_visible(False)
-                ax.xaxis.set_visible(False)
-                ax.tick_params(axis='y', length=0, labelsize=10)
-                
-                # ESPAÇO EXTRA: 35% de margem no topo do eixo X para os números grandes não voarem da tela
-                max_val = max(chunk_plot[col_valor].max(), 0.1)
-                ax.set_xlim(0, max_val * 1.35)
-                
-                for index, value in enumerate(chunk_plot[col_valor]):
-                    val_str = f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                    ax.text(value + (max_val * 0.02), index, val_str, va='center', fontsize=10, fontweight='bold', color='#111111')
+            max_linhas = 1
+            for j, item in enumerate(linha_dados):
+                linhas = obter_linhas_reais(pdf, widths[j], item)
+                if linhas > max_linhas:
+                    max_linhas = linhas
                     
-                plt.tight_layout()
-                tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
-                plt.savefig(tmpfile.name, format='png', dpi=200, bbox_inches='tight', facecolor='#FFFFFF')
-                plt.close(fig)
+            h_linha = (max_linhas * line_height) + 2
+            
+            if pdf.get_y() + h_linha > 275:
+                pdf.add_page()
+                pdf.set_fill_color(17, 17, 17)
+                pdf.set_text_color(255, 255, 255)
+                pdf.set_font("Arial", 'B', 9)
+                for j, col in enumerate(colunas):
+                    pdf.cell(widths[j], 8, limpar_texto(col), border=1, fill=True, align='C')
+                pdf.ln()
+                pdf.set_text_color(26, 28, 30)
+                pdf.set_font("Arial", '', 8)
                 
-                # CENTRALIZAÇÃO PERFEITA NO MEIO DA FOLHA A4
-                # 1 polegada (do figsize) = 19mm na impressão final. A4 tem 297mm de altura.
-                image_height_mm = fig_height * 19
-                center_y = 148.5 - (image_height_mm / 2)
-                y_pos = max(pdf.get_y() + 5, center_y) # Garante que nunca sobrepõe o título
+            start_x = pdf.get_x()
+            start_y = pdf.get_y()
+            
+            for j, item in enumerate(linha_dados):
+                w = widths[j]
+                x = start_x + sum(widths[:j])
+                y = start_y
                 
-                pdf.image(tmpfile.name, x=10, y=y_pos, w=190)
+                pdf.rect(x, y, w, h_linha, 'D')
                 
-                try: os.remove(tmpfile.name)
-                except: pass
+                linhas_deste_texto = obter_linhas_reais(pdf, w, item)
+                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
+                
+                pdf.set_xy(x, offset_y)
+                
+                align_h = 'C' if j == 0 else ('L' if j == 1 else 'R')
+                pdf.multi_cell(w, line_height, item, border=0, align=align_h)
+                
+            pdf.set_xy(start_x, start_y + h_linha)
+
+    def append_pdf_grafico_imagem(pdf, df, titulo, col_nome, col_valor):
+        pdf.add_page()
+        if titulo:
+            pdf.set_font("Arial", 'B', 14)
+            pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
+            pdf.ln(5)
+            
+        if plt is not None and tempfile is not None:
+            # SEM LIMITE OCULTO. O DF que entra já vem cortado de acordo com a barra de arrastar!
+            df_plot = df.sort_values(by=col_valor, ascending=True) 
+            
+            fig_height = max(5, len(df_plot) * 0.45)
+            fig, ax = plt.subplots(figsize=(10, fig_height))
+            
+            nomes_limpos = df_plot[col_nome].astype(str).apply(lambda x: (x[:45] + '...') if len(x) > 45 else x)
+            ax.barh(nomes_limpos, df_plot[col_valor], color='#111111', height=0.6)
+            
+            for spine in ['top', 'right', 'bottom', 'left']: 
+                ax.spines[spine].set_visible(False)
+            ax.xaxis.set_visible(False)
+            ax.tick_params(axis='y', length=0, labelsize=9)
+            
+            max_val = df_plot[col_valor].max()
+            if max_val == 0: max_val = 1
+            
+            # ESPAÇO DE RESPIRAÇÃO MANTIDO PARA NUNCA CORTAR O TEXTO
+            ax.set_xlim(0, max_val * 1.35)
+            
+            for index, value in enumerate(df_plot[col_valor]):
+                val_str = f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                ax.text(value + (max_val * 0.02), index, val_str, va='center', fontsize=9, fontweight='bold', color='#111111')
+                
+            plt.tight_layout()
+            
+            # O SEGREDO MÁGICO: Gerar um ID ÚNICO para o nome do ficheiro!
+            unique_id = uuid.uuid4().hex[:10]
+            tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=f'_{unique_id}.png')
+            
+            plt.savefig(tmpfile.name, format='png', dpi=200, bbox_inches='tight', facecolor='#FFFFFF')
+            plt.close(fig)
+            
+            y_start = max(pdf.get_y() + 5, 25)
+            pdf.image(tmpfile.name, x=10, y=y_start, w=190)
+            
+            try: os.remove(tmpfile.name)
+            except: pass
         else:
-            pdf.add_page()
-            if titulo:
-                pdf.set_font("Arial", 'B', 14)
-                pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
-                pdf.ln(5)
             pdf.set_font("Arial", '', 10)
             pdf.multi_cell(0, 10, "Aviso: Biblioteca 'matplotlib' nao instalada. Rode 'pip install matplotlib' para exibir os graficos visuais no PDF.", align='C')
 
@@ -562,6 +616,20 @@ if arquivos:
                 m2.metric("Principal Entidade", dados_grafico_ent.iloc[0]['ENTIDADE'])
                 m3.metric("Período Analisado", f"{dias_periodo} Dia(s)")
                 m4.metric("Quantidade de itens", f"{total_linhas} Linha(s)")
+                
+                st.markdown("---")
+                
+                # BARRA DESLIZANTE DE CONTROLE DE EXIBIÇÃO (Sem limite Oculto)
+                max_ent = len(dados_grafico_ent) if len(dados_grafico_ent) > 0 else 1
+                limite_entidades = st.slider(
+                    "🎚️ Ajuste o número de Entidades exibidas nos gráficos (Top N):", 
+                    min_value=1, 
+                    max_value=max_ent, 
+                    value=min(30, max_ent) # Inicia em 30 ou no máximo se for menor
+                )
+                
+                # Aplica o limite escolhido na barra deslizante APENAS para o gráfico de Entidades
+                dados_grafico_ent_plot = dados_grafico_ent.head(limite_entidades)
 
                 aba_visu, aba_tab, aba_rel = st.tabs(["📊 Gráfico", "📋 Tabela Detalhada", "📑 Relatório Completo"])
 
@@ -572,7 +640,7 @@ if arquivos:
                     tipo_grafico = st.radio("📊 Escolha o modelo do Gráfico:", ["Por Entidade (Padrão)", "Categorizado (Por Tipo de Pagamento)", "Por Categoria de Despesa"], horizontal=True)
                     
                     if tipo_grafico == "Por Entidade (Padrão)":
-                        dados_completos = dados_grafico_ent.sort_values(by='VALOR', ascending=True).tail(25) 
+                        dados_completos = dados_grafico_ent_plot.sort_values(by='VALOR', ascending=True)
                         dados_barras_formatados = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
                         altura_dinamica = max(600, len(dados_completos) * 50) 
                         bar_options = {
@@ -761,8 +829,9 @@ if arquivos:
                             pdf_relatorio = PDFReport()
                             
                             for item in ordem_relatorio:
-                                if item == "Gráfico: Por Entidade (Padrão)" and not dados_grafico_ent.empty:
-                                    append_pdf_grafico_imagem(pdf_relatorio, dados_grafico_ent, f"{titulo_customizado_grafico} - Entidades", 'ENTIDADE', 'VALOR')
+                                # Usamos o "dados_grafico_ent_plot" que vem cortado pelo Slider que o Senhor controlar na tela!
+                                if item == "Gráfico: Por Entidade (Padrão)" and not dados_grafico_ent_plot.empty:
+                                    append_pdf_grafico_imagem(pdf_relatorio, dados_grafico_ent_plot, f"{titulo_customizado_grafico} - Entidades", 'ENTIDADE', 'VALOR')
                                 elif item == "Gráfico: Categorizado (Por Tipo de Pagamento)" and not dados_grafico_cat.empty:
                                     append_pdf_grafico_imagem(pdf_relatorio, dados_grafico_cat, f"{titulo_customizado_grafico} - Pagamentos", 'CATEGORIA', 'VALOR')
                                 elif item == "Gráfico: Por Categoria de Despesa" and not dados_grafico_desp.empty:
