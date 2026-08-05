@@ -1,43 +1,50 @@
-import streamlit as st
-import pandas as pd
-from streamlit_echarts import st_echarts
-import plotly.graph_objects as go
-from datetime import datetime
+import io
 import math
-import unicodedata
-import re
 import os
+import re
+import tempfile
+import traceback
+import unicodedata
 import uuid
 
-# --- MOTORES EXTERNOS ---
+import pandas as pd
+import streamlit as st
+
+
+# Componentes opcionais. A ausÃªncia de um deles nÃ£o impede o site de abrir.
+try:
+    from streamlit_echarts import st_echarts
+except Exception:
+    st_echarts = None
+
+try:
+    import plotly.graph_objects as go
+except Exception:
+    go = None
+
 try:
     from fpdf import FPDF
-except ImportError:
+except Exception:
     FPDF = None
 
 try:
     from streamlit_sortables import sort_items
-except ImportError:
+except Exception:
     sort_items = None
 
-try:
-    import matplotlib.pyplot as plt
-    import tempfile
-except ImportError:
-    plt = None
-    tempfile = None
 
-# 1. SETUP DA PÁGINA (LIGHT MODE MINIMALISTA)
-st.set_page_config(page_title="RELATORIADOR", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="RELATORIADOR", page_icon="ðŸ›¡ï¸", layout="wide")
 
-# --- DESIGN PREMIUM CLEAN (B&W) ---
-st.markdown("""
+st.markdown(
+    """
     <style>
-    /* Fonte Calibri exigida pelo Senhor */
     html, body, [class*="css"] { font-family: 'Calibri', sans-serif; }
-    .main { background-color: #F8F9FB; }
-    [data-testid="stSidebar"] { background-color: #FFFFFF; border-right: 1px solid #E0E4E8; }
-    .stMetric, .echarts-container, .js-plotly-plot {
+    .stApp { background-color: #F8F9FB; }
+    [data-testid="stSidebar"] {
+        background-color: #FFFFFF;
+        border-right: 1px solid #E0E4E8;
+    }
+    [data-testid="stMetric"], .echarts-container, .js-plotly-plot {
         background: white !important;
         border: 1px solid #E0E4E8 !important;
         border-radius: 15px !important;
@@ -45,917 +52,1044 @@ st.markdown("""
         box-shadow: 0 4px 12px rgba(0,0,0,0.03) !important;
     }
     .stTextInput > div > div > input {
-        border-radius: 12px; border: 1px solid #D0D5DD; padding: 12px 20px;
+        border-radius: 12px;
+        border: 1px solid #D0D5DD;
+        padding: 12px 20px;
         font-family: 'Calibri', sans-serif;
     }
     .stTextInput > div > div > input:focus {
-        border-color: #000000; box-shadow: 0 0 0 1px #000000;
+        border-color: #000000;
+        box-shadow: 0 0 0 1px #000000;
     }
-    .stDeployButton {display:none;}
+    .stDeployButton { display: none; }
     </style>
-    """, unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True,
+)
 
-MESES_PT = {1: "JANEIRO", 2: "FEVEREIRO", 3: "MARÇO", 4: "ABRIL", 5: "MAIO", 6: "JUNHO",
-            7: "JULHO", 8: "AGOSTO", 9: "SETEMBRO", 10: "OUTUBRO", 11: "NOVEMBRO", 12: "DEZEMBRO"}
 
-def formatar_contabil(valor):
-    try: return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except: return "R$ 0,00"
+MESES_PT = {
+    1: "JANEIRO",
+    2: "FEVEREIRO",
+    3: "MARÃ‡O",
+    4: "ABRIL",
+    5: "MAIO",
+    6: "JUNHO",
+    7: "JULHO",
+    8: "AGOSTO",
+    9: "SETEMBRO",
+    10: "OUTUBRO",
+    11: "NOVEMBRO",
+    12: "DEZEMBRO",
+}
 
-def extrair_valor(v):
-    if pd.isna(v): return 0.0
-    if isinstance(v, (int, float)): return float(v)
-    v = str(v).upper().replace('R$', '').replace(' ', '')
-    if ',' in v and '.' in v: v = v.replace('.', '').replace(',', '.')
-    elif ',' in v: v = v.replace(',', '.')
-    try: return float(v)
-    except: return 0.0
+DESPESAS_VALIDAS = [
+    "ALUGUEL",
+    "CARTÃƒO DE CRÃ‰DITO",
+    "MFC",
+    "CONSUMO",
+    "DESPACHANTE ADUANEIRO",
+    "DESPESA VARIAVEL",
+    "EMPRESTIMO",
+    "DOAÃ‡ÃƒO",
+    "FORNECEDOR EXTERIOR",
+    "FORNECEDORES",
+    "FUNCIONÃRIOS",
+    "IMPOSTO",
+    "MARKETING",
+    "PATRIMONIO",
+    "PRESTADOR DE SERVIÃ‡O",
+    "RENEGOCIAÃ‡ÃƒO - ACORDO",
+    "SEGURO",
+    "SÃ“CIOS",
+    "TRANSPORTADORA",
+]
 
-def converter_para_data(v):
-    return pd.to_datetime(v, errors='coerce', dayfirst=True)
-
-HOJE = pd.to_datetime('today').normalize()
-
-def calcular_status_vencimento(data_alvo):
-    if pd.isnull(data_alvo) or str(data_alvo).strip() == "-": return "-"
-    if isinstance(data_alvo, str):
-        try: data_alvo = pd.to_datetime(data_alvo, format='%d/%m/%Y')
-        except: return "-"
-    dias_diferenca = (data_alvo - HOJE).days
-    if dias_diferenca < 0: return f"🚨 Vencido há {abs(dias_diferenca)} dias"
-    elif dias_diferenca == 0: return "⚠️ Vence HOJE"
-    else: return f"✅ Vence em {dias_diferenca} dias"
-
-def processar_excel_hibrido(df):
-    blocos = {}
-    mes_atual_separador = None
-    cabecalho = None
-    
-    for i, row in df.iterrows():
-        valores_preenchidos = [str(x).strip().upper() for x in row.values if pd.notna(x)]
-        linha_txt = " ".join(valores_preenchidos)
-        palavras_chave = ['DATA', 'PREVISÃO', 'VALOR', 'A RECEBER', 'RECEBIDO', 'RAZÃO SOCIAL', 'CLIENTE']
-        if len(valores_preenchidos) >= 3 and any(k in linha_txt for k in palavras_chave):
-            cabecalho = [str(val).strip().upper() if pd.notna(val) and str(val).strip() != "" else f"COL_{idx}" for idx, val in enumerate(row.values)]
-            df_dados = df.iloc[i+1:].reset_index(drop=True)
-            break
-            
-    if cabecalho is None: return []
-
-    col_data_idx = None
-    for k in ['PREVISÃO', 'VENCIMENTO', 'DATA', 'CRÉDITO']:
-        idx = next((i for i, c in enumerate(cabecalho) if k in c), None)
-        if idx is not None:
-            col_data_idx = idx
-            break
-    
-    for _, row in df_dados.iterrows():
-        valores_validos = [str(x).upper() for x in row.values if pd.notna(x)]
-        if not valores_validos: continue
-        linha_txt = " ".join(valores_validos)
-        
-        if 'MÊS:' in linha_txt:
-            mes_atual_separador = linha_txt.replace('MÊS:', '').strip()
-            continue
-        if ('DATA' in linha_txt or 'PREVISÃO' in linha_txt) and ('VALOR' in linha_txt or 'A RECEBER' in linha_txt):
-            continue
-            
-        valores_linha = list(row.values)[:len(cabecalho)]
-        while len(valores_linha) < len(cabecalho): valores_linha.append(None)
-            
-        nome_mes = mes_atual_separador
-        if nome_mes is None and col_data_idx is not None and col_data_idx < len(valores_linha):
-            dt = converter_para_data(valores_linha[col_data_idx])
-            if pd.notnull(dt): nome_mes = f"{MESES_PT[dt.month]} / {dt.year}"
-        
-        if len(valores_validos) <= 2 and col_data_idx is not None and pd.isna(valores_linha[col_data_idx]): continue
-        if nome_mes is None: nome_mes = "SEM DATA"
-        if nome_mes not in blocos: blocos[nome_mes] = []
-        blocos[nome_mes].append(valores_linha)
-
-    return [(m, pd.DataFrame(d, columns=cabecalho)) for m, d in blocos.items()]
-
-def limpar_texto(t):
-    if pd.isna(t): return ""
-    texto = str(t)
-    texto = texto.replace('🚨', '(!)').replace('⚠️', '(!)').replace('✅', '(OK)').replace('🛡️', '')
-    return texto.encode('latin-1', 'ignore').decode('latin-1')
 
 def remover_acentos(texto):
-    return unicodedata.normalize('NFKD', str(texto)).encode('ASCII', 'ignore').decode('utf-8').upper()
+    return (
+        unicodedata.normalize("NFKD", str(texto))
+        .encode("ASCII", "ignore")
+        .decode("utf-8")
+        .upper()
+    )
+
+
+DESPESAS_VALIDAS_LIMPAS = [remover_acentos(item) for item in DESPESAS_VALIDAS]
+
+
+def formatar_contabil(valor):
+    try:
+        numero = float(valor)
+    except (TypeError, ValueError):
+        numero = 0.0
+    return f"R$ {numero:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def extrair_valor(valor):
+    if pd.isna(valor):
+        return 0.0
+    if isinstance(valor, (int, float)):
+        return float(valor)
+
+    texto = str(valor).upper().replace("R$", "").replace(" ", "")
+    texto = re.sub(r"[^0-9,.-]", "", texto)
+    if "," in texto and "." in texto:
+        texto = texto.replace(".", "").replace(",", ".")
+    elif "," in texto:
+        texto = texto.replace(",", ".")
+
+    try:
+        return float(texto)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def converter_para_data(valor):
+    return pd.to_datetime(valor, errors="coerce", dayfirst=True)
+
+
+def calcular_status_vencimento(data_alvo):
+    if pd.isna(data_alvo):
+        return "-"
+    hoje = pd.Timestamp.today().normalize()
+    data = pd.Timestamp(data_alvo).normalize()
+    diferenca = (data - hoje).days
+    if diferenca < 0:
+        return f"ðŸš¨ Vencido hÃ¡ {abs(diferenca)} dias"
+    if diferenca == 0:
+        return "âš ï¸ Vence HOJE"
+    return f"âœ… Vence em {diferenca} dias"
+
+
+def limpar_texto_pdf(texto):
+    if pd.isna(texto):
+        return ""
+    texto = str(texto)
+    texto = (
+        texto.replace("ðŸš¨", "(!)")
+        .replace("âš ï¸", "(!)")
+        .replace("âœ…", "(OK)")
+        .replace("ðŸ›¡ï¸", "")
+    )
+    return texto.encode("latin-1", "ignore").decode("latin-1")
+
 
 def limpar_nome_arquivo(nome):
-    return re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
+    nome = re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
+    return nome[:120] or "Relatorio_JNL"
+
+
+def tornar_cabecalhos_unicos(cabecalhos):
+    usados = {}
+    resultado = []
+    for indice, cabecalho in enumerate(cabecalhos):
+        texto = str(cabecalho).strip().upper()
+        if not texto or texto in {"NAN", "NONE"}:
+            texto = f"COL_{indice}"
+        quantidade = usados.get(texto, 0)
+        usados[texto] = quantidade + 1
+        resultado.append(texto if quantidade == 0 else f"{texto}_{quantidade + 1}")
+    return resultado
+
+
+def processar_excel_hibrido(df):
+    cabecalho = None
+    inicio_dados = None
+    palavras_chave = [
+        "DATA",
+        "PREVISÃƒO",
+        "PREVISAO",
+        "VALOR",
+        "A RECEBER",
+        "RECEBIDO",
+        "RAZÃƒO SOCIAL",
+        "RAZAO SOCIAL",
+        "CLIENTE",
+        "FORNECEDOR",
+        "DEVEDOR",
+    ]
+
+    for indice, linha in df.iterrows():
+        preenchidos = [str(x).strip().upper() for x in linha.values if pd.notna(x)]
+        texto_linha = " ".join(preenchidos)
+        if len(preenchidos) >= 3 and any(chave in texto_linha for chave in palavras_chave):
+            cabecalho = tornar_cabecalhos_unicos(linha.values)
+            inicio_dados = indice + 1
+            break
+
+    if cabecalho is None or inicio_dados is None:
+        return []
+
+    df_dados = df.iloc[inicio_dados:].reset_index(drop=True)
+    indice_data = None
+    for chave in ["PREVISÃƒO", "PREVISAO", "VENCIMENTO", "DATA", "CRÃ‰DITO", "CREDITO"]:
+        indice_data = next((i for i, coluna in enumerate(cabecalho) if chave in coluna), None)
+        if indice_data is not None:
+            break
+
+    blocos = {}
+    mes_separador = None
+
+    for _, linha in df_dados.iterrows():
+        valores_validos = [str(x).strip().upper() for x in linha.values if pd.notna(x)]
+        if not valores_validos:
+            continue
+
+        texto_linha = " ".join(valores_validos)
+        texto_sem_acento = remover_acentos(texto_linha)
+
+        if "MES:" in texto_sem_acento:
+            mes_separador = texto_linha.split(":", 1)[-1].strip()
+            continue
+
+        if (
+            ("DATA" in texto_sem_acento or "PREVISAO" in texto_sem_acento)
+            and ("VALOR" in texto_sem_acento or "A RECEBER" in texto_sem_acento)
+        ):
+            continue
+
+        valores = list(linha.values)[: len(cabecalho)]
+        valores.extend([None] * (len(cabecalho) - len(valores)))
+
+        nome_mes = mes_separador
+        if nome_mes is None and indice_data is not None and indice_data < len(valores):
+            data = converter_para_data(valores[indice_data])
+            if pd.notna(data):
+                nome_mes = f"{MESES_PT[data.month]} / {data.year}"
+
+        if indice_data is not None and len(valores_validos) <= 2 and pd.isna(valores[indice_data]):
+            continue
+
+        nome_mes = nome_mes or "SEM DATA"
+        blocos.setdefault(nome_mes, []).append(valores)
+
+    return [
+        (nome_mes, pd.DataFrame(linhas, columns=cabecalho))
+        for nome_mes, linhas in blocos.items()
+    ]
+
+
+def encontrar_coluna(colunas, prioridades, excluir=None):
+    excluir = excluir or []
+    for prioridade in prioridades:
+        prioridade_limpa = remover_acentos(prioridade)
+        for coluna in colunas:
+            coluna_limpa = remover_acentos(coluna)
+            if prioridade_limpa in coluna_limpa and not any(
+                remover_acentos(item) in coluna_limpa for item in excluir
+            ):
+                return coluna
+    return None
+
+
+@st.cache_data(show_spinner=False)
+def ler_arquivo(nome, conteudo):
+    buffer = io.BytesIO(conteudo)
+    nome_minusculo = nome.lower()
+
+    if nome_minusculo.endswith(".csv"):
+        ultimo_erro = None
+        for encoding in ["utf-8-sig", "latin-1"]:
+            for separador in [";", ",", "\t"]:
+                try:
+                    buffer.seek(0)
+                    df = pd.read_csv(buffer, header=None, sep=separador, encoding=encoding)
+                    if len(df.columns) > 2:
+                        return df
+                except Exception as erro:
+                    ultimo_erro = erro
+        if ultimo_erro:
+            raise ultimo_erro
+
+    buffer.seek(0)
+    return pd.read_excel(buffer, header=None)
+
+
+def preparar_resumo(df_mes):
+    colunas = list(df_mes.columns)
+
+    valores_diretos = [
+        coluna
+        for coluna in colunas
+        if remover_acentos(coluna).strip() in {"RECEBIDO", "A RECEBER"}
+    ]
+    if len(valores_diretos) == 2:
+        contagens = {
+            coluna: df_mes[coluna].map(extrair_valor).gt(0).sum()
+            for coluna in valores_diretos
+        }
+        col_valor = max(contagens, key=contagens.get)
+    elif len(valores_diretos) == 1:
+        col_valor = valores_diretos[0]
+    else:
+        col_valor = encontrar_coluna(colunas, ["VALOR", "PAGO", "A PAGAR"])
+
+    col_data = encontrar_coluna(
+        colunas,
+        ["PREVISÃƒO", "PREVISAO", "VENCIMENTO", "DATA", "PAGAMENTO", "CRÃ‰DITO", "CREDITO"],
+    )
+    col_documento = encontrar_coluna(
+        colunas,
+        ["FORMA DE PAGAMENTO", "DOCUMENTO", "DOC", "TIPO", "MODALIDADE"],
+    )
+    col_nf = encontrar_coluna(colunas, ["NOTA FISCAL", "N.F", "NF", "NOTA"])
+    col_parcela = encontrar_coluna(colunas, ["NÂº PARCELA", "NUMERO PARCELA", "PARCELA", "PARC"])
+    col_entidade = encontrar_coluna(
+        colunas,
+        ["RAZÃƒO SOCIAL", "RAZAO SOCIAL", "CLIENTE", "FORNECEDOR", "DEVEDOR"],
+        excluir=["MINHA EMPRESA"],
+    )
+    col_descricao = encontrar_coluna(
+        colunas,
+        ["DESCRIÃ‡ÃƒO", "DESCRICAO", "HISTÃ“RICO", "HISTORICO", "RAZÃƒO SOCIAL", "RAZAO SOCIAL", "CLIENTE", "FORNECEDOR", "DEVEDOR"],
+        excluir=["MINHA EMPRESA"],
+    )
+
+    if col_valor is None or col_data is None:
+        return None
+
+    if col_descricao is None:
+        col_descricao = colunas[1] if len(colunas) > 1 else colunas[0]
+    if col_entidade is None:
+        col_entidade = col_descricao
+
+    df = df_mes.copy()
+    df["VALOR_NORMALIZADO"] = df[col_valor].map(extrair_valor)
+    df["DATA_NORMALIZADA"] = pd.to_datetime(df[col_data], errors="coerce", dayfirst=True).dt.normalize()
+    df["DESCRICAO_LIMPA"] = (
+        df[col_descricao].astype(str).str.upper().str.strip().replace(r"\s+", " ", regex=True)
+    )
+    df["ENTIDADE_LIMPA"] = (
+        df[col_entidade].astype(str).str.upper().str.strip().replace(r"\s+", " ", regex=True)
+    )
+
+    df = df[~df["DESCRICAO_LIMPA"].isin(["", "NAN", "NONE"])]
+    df["ENTIDADE_LIMPA"] = df["ENTIDADE_LIMPA"].replace(["", "NAN", "NONE"], pd.NA)
+    df["ENTIDADE_LIMPA"] = df["ENTIDADE_LIMPA"].fillna(df["DESCRICAO_LIMPA"])
+
+    def coluna_texto(coluna):
+        if coluna is None:
+            return pd.Series("-", index=df.index, dtype="object")
+        serie = df[coluna].astype(str).str.upper().str.strip()
+        return serie.replace(["NAN", "NONE", ""], "-")
+
+    df["DOCUMENTO"] = coluna_texto(col_documento)
+    df["NOTA FISCAL"] = coluna_texto(col_nf)
+    df["PARCELA"] = coluna_texto(col_parcela)
+
+    def extrair_despesa(linha):
+        texto = remover_acentos(" ".join(str(x) for x in linha.values if pd.notna(x)))
+        for indice, despesa in enumerate(DESPESAS_VALIDAS_LIMPAS):
+            if despesa in texto:
+                return DESPESAS_VALIDAS[indice]
+        return ""
+
+    df["DESPESA"] = df.apply(extrair_despesa, axis=1)
+
+    return pd.DataFrame(
+        {
+            "ENTIDADE": df["ENTIDADE_LIMPA"],
+            "DESCRICAO": df["DESCRICAO_LIMPA"],
+            "DATA": df["DATA_NORMALIZADA"],
+            "DOCUMENTO": df["DOCUMENTO"],
+            "NOTA FISCAL": df["NOTA FISCAL"],
+            "PARCELA": df["PARCELA"],
+            "DESPESA": df["DESPESA"],
+            "VALOR": df["VALOR_NORMALIZADO"],
+        }
+    )
+
+
+def categorizar_pagamento(documento):
+    texto = remover_acentos(documento)
+    if "BOLETO" in texto:
+        return "Boleto"
+    if "CART" in texto:
+        return "CartÃ£o"
+    if any(item in texto for item in ["DEP", "PIX", "VISTA", "TRANSF", "TED", "DOC"]):
+        return "DepÃ³sito/Ã  vista/pix"
+    if "DIN" in texto or "ESP" in texto:
+        return "Dinheiro"
+    return "Outros"
+
+
+def entidade_para_grafico(linha):
+    entidade = str(linha["ENTIDADE"]).strip().upper()
+    if (
+        entidade in {"", "NAN", "NONE"}
+        or "JNL IMPORTADORA" in entidade
+        or "01.718.395" in entidade
+        or "MINHA EMPRESA" in entidade
+    ):
+        return str(linha["DESCRICAO"]).strip().upper()
+    return entidade
+
 
 def obter_linhas_reais(pdf, largura, texto):
-    if pd.isna(texto) or str(texto).strip() == "": return 1
-    texto = str(texto)
-    w_util = largura - 3 
-    if w_util <= 0: return 1
-    
-    linhas = 0
-    for paragrafo in texto.split('\n'):
-        palavras = paragrafo.split(' ')
-        linha_atual = ""
-        linhas_neste_paragrafo = 1
-        for p in palavras:
-            teste_linha = p if not linha_atual else linha_atual + " " + p
-            if pdf.get_string_width(teste_linha) > w_util:
-                if linha_atual == "": 
-                    linhas_neste_paragrafo += max(1, math.ceil(pdf.get_string_width(p) / w_util)) - 1
-                    linha_atual = p
+    texto = limpar_texto_pdf(texto)
+    if not texto:
+        return 1
+    largura_util = max(largura - 3, 1)
+    total = 0
+    for paragrafo in texto.split("\n"):
+        palavras = paragrafo.split()
+        if not palavras:
+            total += 1
+            continue
+        linha = ""
+        linhas_paragrafo = 1
+        for palavra in palavras:
+            teste = palavra if not linha else f"{linha} {palavra}"
+            if pdf.get_string_width(teste) > largura_util:
+                if linha:
+                    linhas_paragrafo += 1
                 else:
-                    linhas_neste_paragrafo += 1
-                    linha_atual = p
+                    linhas_paragrafo += max(1, math.ceil(pdf.get_string_width(palavra) / largura_util)) - 1
+                linha = palavra
             else:
-                linha_atual = teste_linha
-        linhas += linhas_neste_paragrafo
-    return max(1, linhas)
+                linha = teste
+        total += linhas_paragrafo
+    return max(total, 1)
 
-# ==========================================
-# MOTOR UNIFICADO DE PDF E IMAGENS
-# ==========================================
+
 if FPDF is not None:
+
     class PDFReport(FPDF):
         def footer(self):
             self.set_y(-15)
-            self.set_font('Arial', 'I', 8)
-            self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
+            self.set_font("Arial", "I", 8)
+            self.cell(0, 10, f"Pagina {self.page_no()}", border=0, align="C")
 
-    def append_pdf_tabela(pdf, df, titulo, colunas, widths):
-        pdf.add_page()
-        if titulo:
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
-            pdf.ln(5)
-            
-        fator = 190 / sum(widths)
-        widths_norm = [w * fator for w in widths]
-            
+
+    def desenhar_cabecalho_tabela(pdf, colunas, larguras):
         pdf.set_fill_color(17, 17, 17)
         pdf.set_text_color(255, 255, 255)
-        
-        for i, col in enumerate(colunas):
-            col_text = limpar_texto(col)
-            pdf.set_font("Arial", 'B', 9)
-            font_size = 9.0
-            while pdf.get_string_width(col_text) > widths_norm[i] - 2 and font_size > 5:
-                font_size -= 0.5
-                pdf.set_font("Arial", 'B', font_size)
-            pdf.cell(widths_norm[i], 8, col_text, border=1, fill=True, align='C')
-            pdf.set_font("Arial", 'B', 9)
+        for indice, coluna in enumerate(colunas):
+            texto = limpar_texto_pdf(coluna)
+            tamanho = 9.0
+            pdf.set_font("Arial", "B", tamanho)
+            while pdf.get_string_width(texto) > larguras[indice] - 2 and tamanho > 5:
+                tamanho -= 0.5
+                pdf.set_font("Arial", "B", tamanho)
+            pdf.cell(larguras[indice], 8, texto, border=1, fill=True, align="C")
         pdf.ln()
-        
-        line_height = 5
-        
-        for _, row in df.iterrows():
-            # A linha de total pode estar em qualquer coluna, dependendo da ordem escolhida.
-            is_total = any("TOTAL" in str(item).upper() for item in row.values)
-            if is_total:
-                pdf.set_font("Arial", 'B', 9)
-                pdf.set_fill_color(230, 230, 230)
-                pdf.set_text_color(17, 17, 17)
-            else:
-                pdf.set_font("Arial", '', 8)
-                pdf.set_fill_color(255, 255, 255)
-                pdf.set_text_color(26, 28, 30)
-                
-            max_linhas = 1
-            for i, item in enumerate(row):
-                texto = limpar_texto(item)
-                linhas = obter_linhas_reais(pdf, widths_norm[i], texto)
-                if linhas > max_linhas:
-                    max_linhas = linhas
-                    
-            h_linha = (max_linhas * line_height) + 2
-            
-            if pdf.get_y() + h_linha > 275:
+
+
+    def append_pdf_tabela(pdf, df, titulo, colunas, larguras):
+        pdf.add_page()
+        if titulo:
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(0, 10, limpar_texto_pdf(titulo), border=0, ln=1, align="C")
+            pdf.ln(4)
+
+        fator = 190 / max(sum(larguras), 1)
+        larguras = [largura * fator for largura in larguras]
+        desenhar_cabecalho_tabela(pdf, colunas, larguras)
+
+        altura_texto = 5
+        for _, linha in df.iterrows():
+            valores = [linha[coluna] for coluna in colunas]
+            total = any("TOTAL" in str(valor).upper() for valor in valores)
+            pdf.set_font("Arial", "B" if total else "", 9 if total else 8)
+
+            quantidade_linhas = max(
+                obter_linhas_reais(pdf, larguras[indice], valor)
+                for indice, valor in enumerate(valores)
+            )
+            altura_linha = quantidade_linhas * altura_texto + 2
+
+            if pdf.get_y() + altura_linha > 275:
                 pdf.add_page()
-                pdf.set_fill_color(17, 17, 17)
-                pdf.set_text_color(255, 255, 255)
-                
-                for i, col in enumerate(colunas):
-                    col_text = limpar_texto(col)
-                    pdf.set_font("Arial", 'B', 9)
-                    font_size = 9.0
-                    while pdf.get_string_width(col_text) > widths_norm[i] - 2 and font_size > 5:
-                        font_size -= 0.5
-                        pdf.set_font("Arial", 'B', font_size)
-                    pdf.cell(widths_norm[i], 8, col_text, border=1, fill=True, align='C')
-                    pdf.set_font("Arial", 'B', 9)
-                pdf.ln()
-                
-                if is_total:
-                    pdf.set_font("Arial", 'B', 9)
+                desenhar_cabecalho_tabela(pdf, colunas, larguras)
+                pdf.set_font("Arial", "B" if total else "", 9 if total else 8)
+
+            inicio_x = pdf.get_x()
+            inicio_y = pdf.get_y()
+            deslocamento_x = 0
+
+            for indice, valor in enumerate(valores):
+                largura = larguras[indice]
+                x = inicio_x + deslocamento_x
+                texto = limpar_texto_pdf(valor)
+
+                if total:
                     pdf.set_fill_color(230, 230, 230)
                     pdf.set_text_color(17, 17, 17)
+                    pdf.rect(x, inicio_y, largura, altura_linha, style="DF")
                 else:
-                    pdf.set_font("Arial", '', 8)
                     pdf.set_fill_color(255, 255, 255)
                     pdf.set_text_color(26, 28, 30)
-                    
-            start_x = pdf.get_x()
-            start_y = pdf.get_y()
-            
-            for i, item in enumerate(row):
-                texto = limpar_texto(item)
-                w = widths_norm[i]
-                x = start_x + sum(widths_norm[:i])
-                y = start_y
-                
-                style = 'DF' if is_total else 'D'
-                pdf.rect(x, y, w, h_linha, style)
-                
-                linhas_deste_texto = obter_linhas_reais(pdf, w, texto)
-                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
-                
-                pdf.set_xy(x, offset_y)
-                
-                col_upper = str(colunas[i]).upper()
-                if "RAZÃO" in col_upper or "DESCRI" in col_upper: align_h = 'L'
-                elif "DATA" in col_upper: align_h = 'C'
-                elif "DOC" in col_upper: align_h = 'C'
-                elif "NOTA" in col_upper or "NF" in col_upper: align_h = 'C'
-                elif "PARC" in col_upper: align_h = 'C'
-                elif "DESPESA" in col_upper: align_h = 'C'
-                elif "VALOR" in col_upper: align_h = 'R'
-                elif "SITUA" in col_upper: align_h = 'C'
-                else: align_h = 'C'
-                
-                pdf.multi_cell(w, line_height, texto, border=0, align=align_h)
-                
-            pdf.set_xy(start_x, start_y + h_linha)
+                    pdf.rect(x, inicio_y, largura, altura_linha, style="D")
 
-    def append_pdf_ranking(pdf, df, titulo):
+                linhas_texto = obter_linhas_reais(pdf, largura, texto)
+                y_texto = inicio_y + (altura_linha - linhas_texto * altura_texto) / 2
+                pdf.set_xy(x, y_texto)
+
+                coluna = remover_acentos(colunas[indice])
+                if "RAZAO" in coluna or "DESCRI" in coluna:
+                    alinhamento = "L"
+                elif "VALOR" in coluna:
+                    alinhamento = "R"
+                else:
+                    alinhamento = "C"
+
+                pdf.multi_cell(largura, altura_texto, texto, border=0, align=alinhamento)
+                deslocamento_x += largura
+
+            pdf.set_xy(inicio_x, inicio_y + altura_linha)
+
+
+    def append_pdf_grafico(pdf, df, titulo, coluna_nome, coluna_valor):
         pdf.add_page()
-        if titulo:
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
-            pdf.ln(5)
-        
-        pdf.set_fill_color(17, 17, 17)
-        pdf.set_text_color(255, 255, 255)
-        pdf.set_font("Arial", 'B', 9)
-        widths = [20, 120, 50]
-        
-        df_ord = df.copy() 
-        col_nome_dinamico = str(df_ord.columns[0]).upper()
-        col_valor_dinamico = df_ord.columns[1]
-        
-        colunas = ["POS.", col_nome_dinamico, "VALOR TOTAL"]
-        for i, col in enumerate(colunas):
-            pdf.cell(widths[i], 8, limpar_texto(col), border=1, fill=True, align='C')
-        pdf.ln()
-        
-        pdf.set_text_color(26, 28, 30)
-        pdf.set_font("Arial", '', 8)
-        line_height = 5
-        
-        for i, row in df_ord.iterrows():
-            pos = f"{i + 1}."
-            nome = limpar_texto(row[df_ord.columns[0]]) 
-            valor = f"R$ {row[col_valor_dinamico]:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            linha_dados = [pos, nome, valor]
-            
-            max_linhas = 1
-            for j, item in enumerate(linha_dados):
-                linhas = obter_linhas_reais(pdf, widths[j], item)
-                if linhas > max_linhas:
-                    max_linhas = linhas
-                    
-            h_linha = (max_linhas * line_height) + 2
-            
-            if pdf.get_y() + h_linha > 275:
-                pdf.add_page()
-                pdf.set_fill_color(17, 17, 17)
-                pdf.set_text_color(255, 255, 255)
-                pdf.set_font("Arial", 'B', 9)
-                for j, col in enumerate(colunas):
-                    pdf.cell(widths[j], 8, limpar_texto(col), border=1, fill=True, align='C')
-                pdf.ln()
-                pdf.set_text_color(26, 28, 30)
-                pdf.set_font("Arial", '', 8)
-                
-            start_x = pdf.get_x()
-            start_y = pdf.get_y()
-            
-            for j, item in enumerate(linha_dados):
-                w = widths[j]
-                x = start_x + sum(widths[:j])
-                y = start_y
-                
-                pdf.rect(x, y, w, h_linha, 'D')
-                
-                linhas_deste_texto = obter_linhas_reais(pdf, w, item)
-                offset_y = y + (h_linha - (linhas_deste_texto * line_height)) / 2
-                
-                pdf.set_xy(x, offset_y)
-                
-                align_h = 'C' if j == 0 else ('L' if j == 1 else 'R')
-                pdf.multi_cell(w, line_height, item, border=0, align=align_h)
-                
-            pdf.set_xy(start_x, start_y + h_linha)
+        pdf.set_font("Arial", "B", 14)
+        pdf.cell(0, 10, limpar_texto_pdf(titulo), border=0, ln=1, align="C")
 
-    def append_pdf_grafico_imagem(pdf, df, titulo, col_nome, col_valor):
-        pdf.add_page()
-        if titulo:
-            pdf.set_font("Arial", 'B', 14)
-            pdf.cell(0, 10, limpar_texto(titulo), 0, 1, 'C')
-            pdf.ln(5)
+        try:
+            import matplotlib
 
-        if plt is not None and tempfile is not None:
-            # Resetar o índice é essencial: as posições das barras, rótulos e valores
-            # precisam usar a mesma sequência numérica.
-            df_plot = (
-                df[[col_nome, col_valor]]
-                .copy()
-                .dropna(subset=[col_nome, col_valor])
-                .sort_values(by=col_valor, ascending=False)
-                .reset_index(drop=True)
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+        except Exception:
+            pdf.set_font("Arial", "", 10)
+            pdf.multi_cell(0, 10, "Biblioteca matplotlib nao disponivel.", align="C")
+            return
+
+        df_plot = (
+            df[[coluna_nome, coluna_valor]]
+            .dropna()
+            .copy()
+            .sort_values(coluna_valor, ascending=False)
+            .reset_index(drop=True)
+        )
+        if df_plot.empty:
+            pdf.set_font("Arial", "", 10)
+            pdf.multi_cell(0, 10, "Nenhum dado disponivel para o grafico.", align="C")
+            return
+
+        nomes = df_plot[coluna_nome].astype(str).map(
+            lambda nome: f"{nome[:48]}..." if len(nome) > 48 else nome
+        )
+        valores = df_plot[coluna_valor].astype(float).tolist()
+        posicoes = list(range(len(df_plot)))
+        altura_figura = min(max(4.8, len(df_plot) * 0.38), 9.2)
+
+        figura, eixo = plt.subplots(figsize=(11.2, altura_figura))
+        eixo.barh(posicoes, valores, color="#111111", height=0.62)
+        eixo.set_yticks(posicoes)
+        eixo.set_yticklabels(nomes.tolist(), fontsize=8.5)
+        eixo.invert_yaxis()
+        eixo.xaxis.set_visible(False)
+        eixo.tick_params(axis="y", length=0, pad=5)
+        for borda in ["top", "right", "bottom", "left"]:
+            eixo.spines[borda].set_visible(False)
+
+        maximo = max(max(valores), 1)
+        eixo.set_xlim(0, maximo * 1.34)
+        for posicao, valor in zip(posicoes, valores):
+            eixo.text(
+                valor + maximo * 0.018,
+                posicao,
+                formatar_contabil(valor),
+                va="center",
+                ha="left",
+                fontsize=8.5,
+                fontweight="bold",
+                color="#111111",
             )
 
-            if df_plot.empty:
-                pdf.set_font("Arial", '', 10)
-                pdf.multi_cell(0, 10, "Nenhum dado disponível para este gráfico.", align='C')
-                return
+        figura.subplots_adjust(left=0.40, right=0.94, top=0.97, bottom=0.04)
+        caminho = os.path.join(tempfile.gettempdir(), f"relatoriador_{uuid.uuid4().hex}.png")
+        figura.savefig(caminho, dpi=160, bbox_inches="tight", pad_inches=0.12, facecolor="white")
+        plt.close(figura)
 
-            # Altura limitada para a imagem sempre caber em uma página A4.
-            fig_height = min(max(4.8, len(df_plot) * 0.38), 9.2)
-            fig, ax = plt.subplots(figsize=(11.2, fig_height))
-
-            nomes_limpos = df_plot[col_nome].astype(str).apply(
-                lambda x: (x[:48] + '...') if len(x) > 48 else x
-            )
-            valores = df_plot[col_valor].astype(float).tolist()
-            posicoes_y = list(range(len(df_plot)))
-
-            # Usar posições numéricas evita que nomes truncados iguais sejam
-            # sobrepostos pelo Matplotlib (era o problema da página 1).
-            ax.barh(posicoes_y, valores, color='#111111', height=0.62)
-            ax.set_yticks(posicoes_y)
-            ax.set_yticklabels(nomes_limpos.tolist(), fontsize=8.5)
-            ax.invert_yaxis()
-
-            for spine in ['top', 'right', 'bottom', 'left']:
-                ax.spines[spine].set_visible(False)
-            ax.xaxis.set_visible(False)
-            ax.tick_params(axis='y', length=0, pad=5)
-
-            max_val = max(valores) if valores else 1
-            if max_val <= 0:
-                max_val = 1
-
-            ax.set_xlim(0, max_val * 1.34)
-            ax.margins(y=0.02)
-
-            for posicao, value in zip(posicoes_y, valores):
-                val_str = f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                ax.text(
-                    value + (max_val * 0.018),
-                    posicao,
-                    val_str,
-                    va='center',
-                    ha='left',
-                    fontsize=8.5,
-                    fontweight='bold',
-                    color='#111111'
-                )
-
-            # Reserva espaço fixo para nomes longos à esquerda e valores à direita.
-            fig.subplots_adjust(left=0.40, right=0.94, top=0.97, bottom=0.04)
-
-            unique_id = uuid.uuid4().hex[:10]
-            tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=f'_{unique_id}.png')
-            tmpfile.close()
-
-            plt.savefig(
-                tmpfile.name,
-                format='png',
-                dpi=200,
-                bbox_inches='tight',
-                pad_inches=0.12,
-                facecolor='#FFFFFF'
-            )
-            plt.close(fig)
-
-            y_start = max(pdf.get_y() + 5, 25)
-            largura_max_mm = 190
-            altura_max_mm = pdf.h - y_start - 18
-
-            # Preserva a proporção da imagem e impede corte/estouro no rodapé.
-            imagem = plt.imread(tmpfile.name)
-            altura_px, largura_px = imagem.shape[:2]
-            escala = min(largura_max_mm / largura_px, altura_max_mm / altura_px)
-            largura_mm = largura_px * escala
-            altura_mm = altura_px * escala
-            x_start = (pdf.w - largura_mm) / 2
-
-            pdf.image(tmpfile.name, x=x_start, y=y_start, w=largura_mm, h=altura_mm)
-
+        try:
+            y = max(pdf.get_y() + 5, 25)
+            pdf.image(caminho, x=10, y=y, w=190)
+        finally:
             try:
-                os.remove(tmpfile.name)
+                os.remove(caminho)
             except OSError:
                 pass
-        else:
-            pdf.set_font("Arial", '', 10)
-            pdf.multi_cell(0, 10, "Aviso: Biblioteca 'matplotlib' nao instalada. Rode 'pip install matplotlib' para exibir os graficos visuais no PDF.", align='C')
 
-    def gerar_pdf_tabela(df, titulo, colunas, widths):
-        pdf = PDFReport()
-        append_pdf_tabela(pdf, df, titulo, colunas, widths)
-        res = pdf.output(dest='S')
-        if isinstance(res, str): return res.encode('latin-1')
-        return bytes(res)
 
-# --- INTERFACE SIDEBAR ---
+    def finalizar_pdf(pdf):
+        resultado = pdf.output(dest="S")
+        if isinstance(resultado, str):
+            return resultado.encode("latin-1")
+        return bytes(resultado)
+
+
+def opcoes_echarts(titulo, nomes, valores, largura_rotulo=220):
+    dados = []
+    for valor in valores:
+        numero = float(valor)
+        dados.append(
+            {
+                "value": numero,
+                "label": {
+                    "show": True,
+                    "position": "right",
+                    "formatter": formatar_contabil(numero),
+                    "color": "#111111",
+                },
+            }
+        )
+
+    return {
+        "backgroundColor": "transparent",
+        "title": {
+            "text": titulo,
+            "left": "center",
+            "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Calibri"},
+        },
+        "toolbox": {
+            "feature": {
+                "saveAsImage": {
+                    "show": True,
+                    "title": "Baixar JPG",
+                    "type": "jpeg",
+                    "backgroundColor": "#FFFFFF",
+                    "pixelRatio": 2,
+                }
+            }
+        },
+        "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+        "grid": {"top": 80, "left": "1%", "right": "17%", "bottom": "2%", "containLabel": True},
+        "xAxis": {
+            "type": "value",
+            "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}},
+        },
+        "yAxis": {
+            "type": "category",
+            "data": nomes,
+            "axisLabel": {
+                "interval": 0,
+                "width": largura_rotulo,
+                "overflow": "break",
+                "lineHeight": 14,
+                "color": "#1A1C1E",
+            },
+        },
+        "series": [
+            {
+                "type": "bar",
+                "data": dados,
+                "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]},
+            }
+        ],
+    }
+
+
+def mostrar_grafico(titulo, dataframe, coluna_nome, coluna_valor, altura_por_item=50):
+    dados = dataframe.sort_values(coluna_valor, ascending=True)
+    altura = max(400, len(dados) * altura_por_item)
+    if st_echarts is not None:
+        opcoes = opcoes_echarts(
+            titulo,
+            dados[coluna_nome].astype(str).tolist(),
+            dados[coluna_valor].astype(float).tolist(),
+        )
+        st_echarts(options=opcoes, height=f"{altura}px")
+    else:
+        st.warning("O grÃ¡fico ECharts estÃ¡ indisponÃ­vel, mas os dados continuam acessÃ­veis.")
+        st.bar_chart(dados.set_index(coluna_nome)[coluna_valor], horizontal=True)
+
+
+def assinatura_dados(*partes):
+    texto = "|".join(str(parte) for parte in partes)
+    return str(abs(hash(texto)))
+
+
 with st.sidebar:
-    st.title("🛡️ RELATORIADOR")
+    st.title("ðŸ›¡ï¸ RELATORIADOR")
     st.markdown("---")
-    st.subheader("📁 GERADOR")
-    arquivos = st.file_uploader("Suba as planilhas que deseja transformar", type=["xlsx", "xls", "csv"], accept_multiple_files=True)
+    st.subheader("ðŸ“ GERADOR")
+    arquivos = st.file_uploader(
+        "Suba as planilhas que deseja transformar",
+        type=["xlsx", "xls", "csv"],
+        accept_multiple_files=True,
+    )
 
-# --- LISTA MESTRE DE DESPESAS ---
-DESPESAS_VALIDAS = [
-    'ALUGUEL', 'CARTÃO DE CRÉDITO', 'MFC', 'CONSUMO', 'DESPACHANTE ADUANEIRO', 
-    'DESPESA VARIAVEL', 'EMPRESTIMO', 'DOAÇÃO', 'FORNECEDOR EXTERIOR', 
-    'FORNECEDORES', 'FUNCIONÁRIOS', 'IMPOSTO', 'MARKETING', 'PATRIMONIO', 
-    'PRESTADOR DE SERVIÇO', 'RENEGOCIAÇÃO - ACORDO', 'SEGURO', 'SÓCIOS', 'TRANSPORTADORA'
-]
-DESPESAS_VALIDAS_LIMPAS = [remover_acentos(d) for d in DESPESAS_VALIDAS]
+    with st.expander("DiagnÃ³stico das bibliotecas"):
+        st.write(f"ECharts: {'OK' if st_echarts else 'indisponÃ­vel'}")
+        st.write(f"Plotly: {'OK' if go else 'indisponÃ­vel'}")
+        st.write(f"PDF: {'OK' if FPDF else 'indisponÃ­vel'}")
+        st.write(f"Ordenador: {'OK' if sort_items else 'indisponÃ­vel'}")
 
-# --- LÓGICA PRINCIPAL ---
-if arquivos:
-    todos_os_blocos = []
-    
-    for arq in arquivos:
-        if arq.name.endswith('.csv'):
-            arq.seek(0)
-            try:
-                df_bruto = pd.read_csv(arq, header=None, sep=';')
-                if len(df_bruto.columns) <= 2:
-                    arq.seek(0)
-                    df_bruto = pd.read_csv(arq, header=None, sep=',')
-            except:
-                arq.seek(0)
-                df_bruto = pd.read_csv(arq, header=None)
+
+if not arquivos:
+    st.info("Aguardando o envio da planilha...")
+    st.stop()
+
+
+try:
+    blocos = []
+    for arquivo in arquivos:
+        try:
+            df_bruto = ler_arquivo(arquivo.name, arquivo.getvalue())
+            resultados = processar_excel_hibrido(df_bruto)
+            if not resultados:
+                st.warning(f"NÃ£o foi possÃ­vel reconhecer o cabeÃ§alho de: {arquivo.name}")
+            blocos.extend(resultados)
+        except ImportError as erro:
+            st.error(
+                f"NÃ£o foi possÃ­vel abrir {arquivo.name}. Verifique openpyxl/xlrd no requirements.txt. Detalhe: {erro}"
+            )
+        except Exception as erro:
+            st.error(f"Erro ao ler {arquivo.name}: {erro}")
+
+    resumos = []
+    for _, df_mes in blocos:
+        resumo = preparar_resumo(df_mes)
+        if resumo is not None and not resumo.empty:
+            resumos.append(resumo)
+
+    if not resumos:
+        st.warning("Nenhuma tabela vÃ¡lida foi encontrada nos arquivos enviados.")
+        st.stop()
+
+    df_master = pd.concat(resumos, ignore_index=True).dropna(subset=["DATA"])
+    df_master = df_master[df_master["VALOR"] > 0]
+    if df_master.empty:
+        st.warning("Nenhuma data e nenhum valor vÃ¡lido foram encontrados.")
+        st.stop()
+
+    data_minima = df_master["DATA"].min().date()
+    data_maxima = df_master["DATA"].max().date()
+
+    with st.sidebar:
+        st.subheader("ðŸ“… Filtro de PerÃ­odo")
+        periodo = st.date_input(
+            "Selecione De / AtÃ©:",
+            value=(data_minima, data_maxima),
+            min_value=data_minima,
+            max_value=data_maxima,
+            format="DD/MM/YYYY",
+        )
+
+    if isinstance(periodo, (tuple, list)) and len(periodo) == 2:
+        inicio, fim = periodo
+    elif isinstance(periodo, (tuple, list)) and len(periodo) == 1:
+        inicio = fim = periodo[0]
+    else:
+        inicio, fim = data_minima, data_maxima
+
+    filtro_data = (df_master["DATA"] >= pd.Timestamp(inicio)) & (
+        df_master["DATA"] <= pd.Timestamp(fim)
+    )
+    df_filtrado = df_master.loc[filtro_data].copy()
+
+    st.markdown("# RelatÃ³rio gerado")
+    pesquisa = st.text_input(
+        "ðŸ’¬ Filtro de pesquisa...",
+        placeholder="Ex.: IMPORPECAS, KS MAQUINAS...",
+    )
+    if pesquisa:
+        termo = pesquisa.strip()
+        filtro_texto = (
+            df_filtrado["ENTIDADE"].str.contains(termo, case=False, na=False, regex=False)
+            | df_filtrado["DESCRICAO"].str.contains(termo, case=False, na=False, regex=False)
+        )
+        df_filtrado = df_filtrado.loc[filtro_texto].copy()
+
+    if df_filtrado.empty:
+        st.info("Nenhum item foi encontrado para os filtros selecionados.")
+        st.stop()
+
+    df_filtrado["ENTIDADE_GRAFICO"] = df_filtrado.apply(entidade_para_grafico, axis=1)
+
+    grafico_entidades = (
+        df_filtrado.groupby("ENTIDADE_GRAFICO", as_index=False)["VALOR"]
+        .sum()
+        .rename(columns={"ENTIDADE_GRAFICO": "ENTIDADE"})
+        .query("VALOR > 0")
+        .sort_values("VALOR", ascending=False)
+    )
+
+    df_categorias = df_filtrado.copy()
+    df_categorias["CATEGORIA"] = df_categorias["DOCUMENTO"].map(categorizar_pagamento)
+    grafico_categorias = (
+        df_categorias.groupby("CATEGORIA", as_index=False)["VALOR"]
+        .sum()
+        .query("VALOR > 0")
+        .sort_values("VALOR", ascending=False)
+    )
+
+    df_despesas = df_filtrado[df_filtrado["DESPESA"] != ""]
+    grafico_despesas = (
+        df_despesas.groupby("DESPESA", as_index=False)["VALOR"]
+        .sum()
+        .query("VALOR > 0")
+        .sort_values("VALOR", ascending=False)
+        if not df_despesas.empty
+        else pd.DataFrame(columns=["DESPESA", "VALOR"])
+    )
+
+    tabela = (
+        df_filtrado.groupby(
+            ["DESCRICAO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "DESPESA"],
+            as_index=False,
+            dropna=False,
+        )["VALOR"]
+        .sum()
+        .query("VALOR > 0")
+        .sort_values(["DATA", "DESCRICAO"])
+    )
+    tabela["STATUS"] = tabela["DATA"].map(calcular_status_vencimento)
+    tabela["DATA"] = tabela["DATA"].dt.strftime("%d/%m/%Y")
+
+    coluna_1, coluna_2, coluna_3, coluna_4 = st.columns(4)
+    coluna_1.metric("Volume Total (Filtrado)", formatar_contabil(df_filtrado["VALOR"].sum()))
+    coluna_2.metric(
+        "Principal Entidade",
+        grafico_entidades.iloc[0]["ENTIDADE"] if not grafico_entidades.empty else "-",
+    )
+    coluna_3.metric("PerÃ­odo Analisado", f"{(fim - inicio).days + 1} Dia(s)")
+    coluna_4.metric("Quantidade de itens", f"{len(tabela)} Linha(s)")
+
+    st.markdown("---")
+    quantidade_entidades = max(len(grafico_entidades), 1)
+    limite = st.slider(
+        "ðŸŽšï¸ NÃºmero de entidades exibidas:",
+        min_value=1,
+        max_value=quantidade_entidades,
+        value=min(30, quantidade_entidades),
+    )
+    grafico_entidades_limitado = grafico_entidades.head(limite)
+
+    aba_grafico, aba_tabela, aba_relatorio = st.tabs(
+        ["ðŸ“Š GrÃ¡fico", "ðŸ“‹ Tabela Detalhada", "ðŸ“‘ RelatÃ³rio Completo"]
+    )
+
+    with aba_grafico:
+        titulo = st.text_input(
+            "ðŸ“ TÃ­tulo Customizado:",
+            value=f"RELAÃ‡ÃƒO DE VALORES ({inicio.strftime('%d/%m/%Y')} atÃ© {fim.strftime('%d/%m/%Y')})",
+        )
+        tipo = st.radio(
+            "ðŸ“Š Escolha o grÃ¡fico:",
+            [
+                "Por Entidade (PadrÃ£o)",
+                "Categorizado (Por Tipo de Pagamento)",
+                "Por Categoria de Despesa",
+            ],
+            horizontal=True,
+        )
+
+        if tipo == "Por Entidade (PadrÃ£o)":
+            mostrar_grafico(titulo, grafico_entidades_limitado, "ENTIDADE", "VALOR", 50)
+        elif tipo == "Categorizado (Por Tipo de Pagamento)":
+            mostrar_grafico(f"{titulo} - Categorizado", grafico_categorias, "CATEGORIA", "VALOR", 80)
+        elif grafico_despesas.empty:
+            st.warning("Nenhuma categoria de despesa foi reconhecida.")
         else:
-            df_bruto = pd.read_excel(arq, header=None)
-            
-        resultados = processar_excel_hibrido(df_bruto)
-        if not resultados:
-            st.warning(f"⚠️ Não foi possível reconhecer o cabeçalho do arquivo: {arq.name}")
-        for nome_mes, dados in resultados:
-            todos_os_blocos.append((nome_mes, dados))
+            mostrar_grafico(f"{titulo} - Despesas", grafico_despesas, "DESPESA", "VALOR", 60)
 
-    resumos_limpos = []
-    for mes, df_mes in todos_os_blocos:
-        col_v = None
-        cols_valores_possiveis = [c for c in df_mes.columns if c.upper().strip() in ['RECEBIDO', 'A RECEBER']]
-        if len(cols_valores_possiveis) == 2:
-            c1, c2 = cols_valores_possiveis
-            v1_count = df_mes[c1].apply(extrair_valor).apply(lambda x: 1 if x > 0 else 0).sum()
-            v2_count = df_mes[c2].apply(extrair_valor).apply(lambda x: 1 if x > 0 else 0).sum()
-            col_v = c1 if v1_count >= v2_count else c2
-        elif len(cols_valores_possiveis) == 1:
-            col_v = cols_valores_possiveis[0]
+    colunas_padrao = [
+        "RAZÃƒO SOCIAL / DESCRIÃ‡ÃƒO",
+        "DATA",
+        "DOCUMENTO",
+        "NOTA FISCAL",
+        "PARCELA",
+        "VALOR",
+        "SITUAÃ‡ÃƒO",
+    ]
+    colunas_ocultas = ["DESPESA"]
+
+    with aba_tabela:
+        titulo_tabela = st.text_input(
+            "ðŸ“ TÃ­tulo Customizado (Tabela):",
+            value=titulo,
+            key="titulo_tabela",
+        )
+
+        if sort_items is not None:
+            chave_estado = "estado_colunas_v2"
+            if chave_estado not in st.session_state:
+                st.session_state[chave_estado] = [
+                    {"header": "âœ… COLUNAS NA TELA E NO PDF", "items": colunas_padrao},
+                    {"header": "âŒ LIXEIRA", "items": colunas_ocultas},
+                ]
+            ordenado = sort_items(
+                st.session_state[chave_estado],
+                multi_containers=True,
+                direction="horizontal",
+                key="ordenador_colunas_v2",
+            )
+            if ordenado:
+                st.session_state[chave_estado] = ordenado
+            colunas_selecionadas = st.session_state[chave_estado][0]["items"]
         else:
-            prioridades_valor = ['VALOR', 'PAGO', 'A PAGAR']
-            for p in prioridades_valor:
-                match = next((c for c in df_mes.columns if p in c.upper()), None)
-                if match:
-                    col_v = match
-                    break
-                
-        col_data = None
-        for p in ['PREVISÃO', 'VENCIMENTO', 'DATA', 'PAGAMENTO', 'CRÉDITO']:
-            match = next((c for c in df_mes.columns if p in c.upper()), None)
-            if match:
-                col_data = match
-                break
-                
-        prioridades_doc = ['DOCUMENTO', 'DOC', 'FORMA DE PAGAMENTO', 'TIPO', 'MODALIDADE']
-        col_doc = None
-        for p in prioridades_doc:
-            match = next((c for c in df_mes.columns if p in c.upper()), None)
-            if match:
-                col_doc = match
-                break
-                
-        prioridades_nf = ['NOTA FISCAL', 'NF', 'N.F', 'NOTA']
-        col_nf = None
-        for p in prioridades_nf:
-            match = next((c for c in df_mes.columns if p in c.upper() or p == c.upper().strip()), None)
-            if match:
-                col_nf = match
-                break
-                
-        prioridades_parc = ['PARCELA', 'PARC', 'Nº PARCELA', 'NUMERO PARCELA']
-        col_parc = None
-        for p in prioridades_parc:
-            match = next((c for c in df_mes.columns if p in c.upper() or p == c.upper().strip()), None)
-            if match:
-                col_parc = match
-                break
-        
-        # A planilha pode ter simultaneamente DESCRIÇÃO e DEVEDOR/CLIENTE.
-        # Antes, DESCRIÇÃO era escolhida como ENTIDADE, causando agrupamentos errados.
-        col_entidade = None
-        for p in ['RAZÃO SOCIAL', 'CLIENTE', 'FORNECEDOR', 'DEVEDOR']:
-            matches = [c for c in df_mes.columns if p in c.upper() and 'MINHA EMPRESA' not in c.upper()]
-            if matches:
-                col_entidade = matches[0]
-                break
+            st.info("O arrastar e soltar estÃ¡ indisponÃ­vel. A ordem padrÃ£o serÃ¡ usada.")
+            colunas_selecionadas = colunas_padrao
 
-        col_descricao = None
-        for p in ['DESCRIÇÃO', 'HISTÓRICO', 'HISTORICO', 'RAZÃO SOCIAL', 'CLIENTE', 'FORNECEDOR', 'DEVEDOR']:
-            matches = [c for c in df_mes.columns if p in c.upper() and 'MINHA EMPRESA' not in c.upper()]
-            if matches:
-                col_descricao = matches[0]
-                break
+        colunas_selecionadas = colunas_selecionadas or ["RAZÃƒO SOCIAL / DESCRIÃ‡ÃƒO", "VALOR"]
+        tabela_final = tabela.copy()
+        tabela_final["VALOR_STR"] = tabela_final["VALOR"].map(formatar_contabil)
+        total = formatar_contabil(tabela_final["VALOR"].sum())
 
-        if col_descricao is None:
-            col_descricao = df_mes.columns[1] if len(df_mes.columns) > 1 else df_mes.columns[0]
-        if col_entidade is None:
-            col_entidade = col_descricao
+        mapa = {
+            "RAZÃƒO SOCIAL / DESCRIÃ‡ÃƒO": tabela_final["DESCRICAO"].tolist() + ["TOTAL GERAL"],
+            "DATA": tabela_final["DATA"].tolist() + ["-"],
+            "DOCUMENTO": tabela_final["DOCUMENTO"].tolist() + ["-"],
+            "NOTA FISCAL": tabela_final["NOTA FISCAL"].tolist() + ["-"],
+            "PARCELA": tabela_final["PARCELA"].tolist() + ["-"],
+            "DESPESA": tabela_final["DESPESA"].tolist() + [""],
+            "VALOR": tabela_final["VALOR_STR"].tolist() + [total],
+            "SITUAÃ‡ÃƒO": tabela_final["STATUS"].tolist() + ["-"],
+        }
+        larguras_mapa = {
+            "RAZÃƒO SOCIAL / DESCRIÃ‡ÃƒO": 300,
+            "DATA": 90,
+            "DOCUMENTO": 90,
+            "NOTA FISCAL": 90,
+            "PARCELA": 80,
+            "DESPESA": 130,
+            "VALOR": 110,
+            "SITUAÃ‡ÃƒO": 120,
+        }
+        df_pdf = pd.DataFrame({coluna: mapa[coluna] for coluna in colunas_selecionadas})
+        larguras = [larguras_mapa[coluna] for coluna in colunas_selecionadas]
 
-        if col_v and col_descricao and col_data:
-            df_tmp = df_mes.copy()
-            df_tmp[col_v] = df_tmp[col_v].apply(extrair_valor)
-            df_tmp[col_data] = pd.to_datetime(df_tmp[col_data], errors='coerce', dayfirst=True).dt.normalize()
+        if go is not None:
+            alinhamentos = []
+            for coluna in colunas_selecionadas:
+                coluna_limpa = remover_acentos(coluna)
+                if "RAZAO" in coluna_limpa or "DESCRI" in coluna_limpa:
+                    alinhamentos.append("left")
+                elif "VALOR" in coluna_limpa:
+                    alinhamentos.append("right")
+                else:
+                    alinhamentos.append("center")
 
-            df_tmp['DESCRICAO_LIMPA'] = (
-                df_tmp[col_descricao]
-                .astype(str)
-                .str.upper()
-                .str.strip()
-                .replace(r'\s+', ' ', regex=True)
-            )
-            df_tmp['ENTIDADE_LIMPA'] = (
-                df_tmp[col_entidade]
-                .astype(str)
-                .str.upper()
-                .str.strip()
-                .replace(r'\s+', ' ', regex=True)
-            )
-
-            df_tmp = df_tmp[~df_tmp['DESCRICAO_LIMPA'].isin(['', 'NAN', 'NONE'])]
-            df_tmp['ENTIDADE_LIMPA'] = df_tmp['ENTIDADE_LIMPA'].replace(['', 'NAN', 'NONE'], pd.NA)
-            df_tmp['ENTIDADE_LIMPA'] = df_tmp['ENTIDADE_LIMPA'].fillna(df_tmp['DESCRICAO_LIMPA'])
-            
-            if col_doc:
-                df_tmp['DOCUMENTO'] = df_tmp[col_doc].astype(str).str.upper().str.strip()
-                df_tmp['DOCUMENTO'] = df_tmp['DOCUMENTO'].replace(['NAN', 'NONE', ''], '-')
-            else:
-                df_tmp['DOCUMENTO'] = "-"
-                
-            if col_nf:
-                df_tmp['NOTA FISCAL'] = df_tmp[col_nf].astype(str).str.upper().str.strip()
-                df_tmp['NOTA FISCAL'] = df_tmp['NOTA FISCAL'].replace(['NAN', 'NONE', ''], '-')
-            else:
-                df_tmp['NOTA FISCAL'] = "-"
-                
-            if col_parc:
-                df_tmp['PARCELA'] = df_tmp[col_parc].astype(str).str.upper().str.strip()
-                df_tmp['PARCELA'] = df_tmp['PARCELA'].replace(['NAN', 'NONE', ''], '-')
-            else:
-                df_tmp['PARCELA'] = "-"
-                
-            def extrair_despesa_linha(row):
-                txt_linha = remover_acentos(" ".join([str(x) for x in row.values if pd.notnull(x)]))
-                for idx_d, d_limpo in enumerate(DESPESAS_VALIDAS_LIMPAS):
-                    if d_limpo in txt_linha:
-                        return DESPESAS_VALIDAS[idx_d] 
-                return ""
-
-            df_tmp['DESPESA'] = df_tmp.apply(extrair_despesa_linha, axis=1)
-            
-            df_tmp = df_tmp.rename(columns={col_data: 'DATA', col_v: 'VALOR'})
-            df_tmp['ENTIDADE'] = df_tmp['ENTIDADE_LIMPA']
-            df_tmp['DESCRICAO'] = df_tmp['DESCRICAO_LIMPA']
-            resumos_limpos.append(df_tmp[['ENTIDADE', 'DESCRICAO', 'DATA', 'DOCUMENTO', 'NOTA FISCAL', 'PARCELA', 'DESPESA', 'VALOR']])
-
-    if resumos_limpos:
-        df_master = pd.concat(resumos_limpos)
-        df_master = df_master.dropna(subset=['DATA'])
-        
-        if not df_master.empty:
-            data_min = df_master['DATA'].min().date()
-            data_max = df_master['DATA'].max().date()
-            
-            with st.sidebar:
-                st.subheader("📅 Filtro de Período")
-                periodo_selecionado = st.date_input("Selecione De / Até:", value=(data_min, data_max), min_value=data_min, max_value=data_max, format="DD/MM/YYYY")
-            
-            if isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 2: dt_inicio, dt_fim = periodo_selecionado
-            elif isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 1: dt_inicio = dt_fim = periodo_selecionado[0]
-            else: dt_inicio, dt_fim = data_min, data_max
-                
-            mask_data = (df_master['DATA'] >= pd.to_datetime(dt_inicio)) & (df_master['DATA'] <= pd.to_datetime(dt_fim))
-            df_filtrado = df_master[mask_data]
-
-            st.markdown("# Relatório gerado")
-            comando_filtro = st.text_input("💬 Filtro de pesquisa...", placeholder="Ex: IMPORPECAS, KS MAQUINAS...")
-            if comando_filtro:
-                termo = comando_filtro.strip().upper()
-                mask_busca = (
-                    df_filtrado['ENTIDADE'].str.contains(termo, case=False, na=False) |
-                    df_filtrado['DESCRICAO'].str.contains(termo, case=False, na=False)
-                )
-                df_filtrado = df_filtrado[mask_busca]
-
-            # PREPARAÇÃO DOS DADOS DOS GRÁFICOS
-            # Quando a coluna de entidade aponta para a própria JNL, usamos a descrição
-            # da conta para não perder o item nem poluir o ranking com "JNL IMPORTADORA".
-            def entidade_exibicao(row):
-                entidade = str(row['ENTIDADE']).strip().upper()
-                if (
-                    entidade in ['', 'NAN', 'NONE'] or
-                    'JNL IMPORTADORA' in entidade or
-                    '01.718.395' in entidade or
-                    'MINHA EMPRESA' in entidade
-                ):
-                    return str(row['DESCRICAO']).strip().upper()
-                return entidade
-
-            df_filtrado = df_filtrado.copy()
-            df_filtrado['ENTIDADE_GRAFICO'] = df_filtrado.apply(entidade_exibicao, axis=1)
-
-            dados_grafico_ent = (
-                df_filtrado.groupby('ENTIDADE_GRAFICO', as_index=False)['VALOR']
-                .sum()
-                .rename(columns={'ENTIDADE_GRAFICO': 'ENTIDADE'})
-                .sort_values(by='VALOR', ascending=False)
-            )
-            dados_grafico_ent = dados_grafico_ent[dados_grafico_ent['VALOR'] > 0]
-            
-            def categorizar_pagamento(d):
-                d = str(d).upper()
-                if 'BOLETO' in d: return 'Boleto'
-                elif 'CART' in d: return 'Cartão'
-                elif any(x in d for x in ['DEP', 'PIX', 'VISTA', 'TRANSF', 'TED', 'DOC']): return 'Depósito/à vista/pix'
-                elif 'DIN' in d or 'ESP' in d: return 'Dinheiro'
-                else: return 'Outros'
-                
-            df_cat = df_filtrado.copy()
-            df_cat['CATEGORIA'] = df_cat['DOCUMENTO'].apply(categorizar_pagamento)
-            dados_grafico_cat = df_cat.groupby('CATEGORIA')['VALOR'].sum().reset_index()
-            dados_grafico_cat = dados_grafico_cat[dados_grafico_cat['VALOR'] > 0].sort_values(by='VALOR', ascending=False)
-            
-            df_desp = df_filtrado[df_filtrado['DESPESA'] != ""]
-            if df_desp.empty: dados_grafico_desp = pd.DataFrame()
-            else:
-                dados_grafico_desp = df_desp.groupby('DESPESA')['VALOR'].sum().reset_index()
-                dados_grafico_desp = dados_grafico_desp[dados_grafico_desp['VALOR'] > 0].sort_values(by='VALOR', ascending=False)
-
-            dados_tabela = df_filtrado.groupby(['DESCRICAO', 'DATA', 'DOCUMENTO', 'NOTA FISCAL', 'PARCELA', 'DESPESA'])['VALOR'].sum().reset_index().sort_values(by=['DATA', 'DESCRICAO'], ascending=[True, True])
-            dados_tabela = dados_tabela[dados_tabela['VALOR'] > 0]
-            
-            dados_tabela['STATUS'] = dados_tabela['DATA'].apply(calcular_status_vencimento)
-            dados_tabela['DATA'] = dados_tabela['DATA'].dt.strftime('%d/%m/%Y').fillna("-")
-            
-            if not dados_grafico_ent.empty:
-                m1, m2, m3, m4 = st.columns(4)
-                total_cash = df_filtrado['VALOR'].sum()
-                dias_periodo = (dt_fim - dt_inicio).days + 1
-                total_linhas = len(dados_tabela)
-                
-                m1.metric("Volume Total (Filtrado)", formatar_contabil(total_cash))
-                m2.metric("Principal Entidade", dados_grafico_ent.iloc[0]['ENTIDADE'])
-                m3.metric("Período Analisado", f"{dias_periodo} Dia(s)")
-                m4.metric("Quantidade de itens", f"{total_linhas} Linha(s)")
-                
-                st.markdown("---")
-                
-                # BARRA DESLIZANTE DE CONTROLE DE EXIBIÇÃO (Sem limite Oculto)
-                max_ent = len(dados_grafico_ent) if len(dados_grafico_ent) > 0 else 1
-                limite_entidades = st.slider(
-                    "🎚️ Ajuste o número de Entidades exibidas nos gráficos (Top N):", 
-                    min_value=1, 
-                    max_value=max_ent, 
-                    value=min(30, max_ent) # Inicia em 30 ou no máximo se for menor
-                )
-                
-                # Aplica o limite escolhido na barra deslizante APENAS para o gráfico de Entidades
-                dados_grafico_ent_plot = dados_grafico_ent.head(limite_entidades)
-
-                aba_visu, aba_tab, aba_rel = st.tabs(["📊 Gráfico", "📋 Tabela Detalhada", "📑 Relatório Completo"])
-
-                with aba_visu:
-                    titulo_customizado_grafico = st.text_input("📝 Título Customizado (Sistema):", value=f"RELAÇÃO DE VALORES ({dt_inicio.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')})")
-                    st.write("💡 *Use o ícone 📷 no canto superior direito do gráfico abaixo para baixar a imagem (JPG fundo branco).*")
-                    
-                    tipo_grafico = st.radio("📊 Escolha o modelo do Gráfico:", ["Por Entidade (Padrão)", "Categorizado (Por Tipo de Pagamento)", "Por Categoria de Despesa"], horizontal=True)
-                    
-                    if tipo_grafico == "Por Entidade (Padrão)":
-                        dados_completos = dados_grafico_ent_plot.sort_values(by='VALOR', ascending=True)
-                        dados_barras_formatados = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
-                        altura_dinamica = max(600, len(dados_completos) * 50) 
-                        bar_options = {
-                            "backgroundColor": "transparent",
-                            "title": {"text": titulo_customizado_grafico, "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Calibri"}},
-                            "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar JPG", "type": "jpeg", "backgroundColor": "#FFFFFF", "pixelRatio": 2}}},
-                            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-                            "grid": {"top": 80, "left": "1%", "right": "15%", "bottom": "1%", "containLabel": True},
-                            "xAxis": {"type": "value", "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}},
-                            "yAxis": {"type": "category", "data": dados_completos['ENTIDADE'].tolist(), "axisLabel": {"interval": 0, "width": 220, "overflow": "break", "lineHeight": 14, "color": "#1A1C1E"}},
-                            "series": [{"type": "bar", "data": dados_barras_formatados, "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}}]
-                        }
-                        st_echarts(options=bar_options, height=f"{altura_dinamica}px")
-                        
-                    elif tipo_grafico == "Categorizado (Por Tipo de Pagamento)":
-                        dados_completos = dados_grafico_cat.sort_values(by='VALOR', ascending=True)
-                        categorias_lista = dados_completos['CATEGORIA'].tolist()
-                        dados_barras_cat = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
-                        altura_dinamica_cat = max(400, len(categorias_lista) * 80)
-                        bar_options_cat = {
-                            "backgroundColor": "transparent",
-                            "title": {"text": titulo_customizado_grafico + " - Categorizado", "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Calibri"}},
-                            "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar JPG", "type": "jpeg", "backgroundColor": "#FFFFFF", "pixelRatio": 2}}},
-                            "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, 
-                            "grid": {"top": 80, "left": "1%", "right": "15%", "bottom": "5%", "containLabel": True},
-                            "xAxis": {"type": "value", "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}},
-                            "yAxis": {"type": "category", "data": categorias_lista, "axisLabel": {"color": "#1A1C1E", "fontWeight": "bold"}},
-                            "series": [{"type": "bar", "data": dados_barras_cat, "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}}]
-                        }
-                        st_echarts(options=bar_options_cat, height=f"{altura_dinamica_cat}px")
-
-                    elif tipo_grafico == "Por Categoria de Despesa":
-                        if dados_grafico_desp.empty:
-                            st.warning("⚠️ Nenhuma despesa reconhecida foi encontrada no período filtrado.")
-                        else:
-                            dados_completos = dados_grafico_desp.sort_values(by='VALOR', ascending=True)
-                            categorias_desp_lista = dados_completos['DESPESA'].tolist()
-                            dados_barras_desp = [{"value": row['VALOR'], "label": {"show": True, "position": "right", "formatter": f"R$ {row['VALOR']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), "color": "#111111"}} for _, row in dados_completos.iterrows()]
-                            altura_dinamica_desp = max(400, len(categorias_desp_lista) * 60)
-                            bar_options_desp = {
-                                "backgroundColor": "transparent",
-                                "title": {"text": titulo_customizado_grafico + " - Despesas", "left": "center", "textStyle": {"color": "#111111", "fontSize": 18, "fontFamily": "Calibri"}},
-                                "toolbox": {"feature": {"saveAsImage": {"show": True, "title": "Baixar JPG", "type": "jpeg", "backgroundColor": "#FFFFFF", "pixelRatio": 2}}},
-                                "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}}, 
-                                "grid": {"top": 80, "left": "1%", "right": "15%", "bottom": "5%", "containLabel": True},
-                                "xAxis": {"type": "value", "splitLine": {"lineStyle": {"type": "dashed", "color": "#E0E4E8"}}},
-                                "yAxis": {"type": "category", "data": categorias_desp_lista, "axisLabel": {"interval": 0, "width": 180, "overflow": "break", "lineHeight": 14, "color": "#1A1C1E", "fontWeight": "bold"}},
-                                "series": [{"type": "bar", "data": dados_barras_desp, "itemStyle": {"color": "#111111", "borderRadius": [0, 8, 8, 0]}}]
-                            }
-                            st_echarts(options=bar_options_desp, height=f"{altura_dinamica_desp}px")
-
-                with aba_tab:
-                    titulo_tabela = st.text_input("📝 Título Customizado (Tabela):", value=titulo_customizado_grafico, key="titulo_tabela_input")
-                    st.write("💡 *Controle as colunas: Arraste para a caixa superior para incluir/ordenar, arraste para a inferior para remover da tela.*")
-                    
-                    col_ativas_padrao = ["RAZÃO SOCIAL / DESCRIÇÃO", "DATA", "DOCUMENTO", "NOTA FISCAL", "PARCELA", "VALOR", "SITUAÇÃO"]
-                    col_ocultas_padrao = ["DESPESA"]
-                    
-                    if sort_items is not None:
-                        if "estado_colunas" not in st.session_state:
-                            st.session_state["estado_colunas"] = [
-                                {'header': '✅ COLUNAS NA TELA E NO PDF (Arraste p/ ordenar)', 'items': col_ativas_padrao},
-                                {'header': '❌ LIXEIRA (Arraste p/ cá para remover)', 'items': col_ocultas_padrao}
-                            ]
-                        
-                        res_sort_colunas = sort_items(st.session_state["estado_colunas"], multi_containers=True, direction='horizontal', key="ordenador_colunas")
-                        if res_sort_colunas:
-                            st.session_state["estado_colunas"] = res_sort_colunas
-                            
-                        colunas_selecionadas = st.session_state["estado_colunas"][0]['items']
-                    else:
-                        st.info("⚠️ Instale 'streamlit-sortables' no terminal para ativar o modo arrastar e soltar.")
-                        colunas_selecionadas = col_ativas_padrao
-                    
-                    if not colunas_selecionadas:
-                        colunas_selecionadas = ["RAZÃO SOCIAL / DESCRIÇÃO", "VALOR"] # Failsafe
-
-                    tabela_final = dados_tabela.copy()
-                    tabela_final['VALOR_STR'] = tabela_final['VALOR'].apply(formatar_contabil)
-                    
-                    soma_total = tabela_final['VALOR'].sum()
-                    soma_total_str = formatar_contabil(soma_total)
-                    
-                    mapa_pdf = {
-                        "RAZÃO SOCIAL / DESCRIÇÃO": tabela_final['DESCRICAO'].tolist() + ["TOTAL GERAL"],
-                        "DATA": tabela_final['DATA'].tolist() + ["-"],
-                        "DOCUMENTO": tabela_final['DOCUMENTO'].tolist() + ["-"],
-                        "NOTA FISCAL": tabela_final['NOTA FISCAL'].tolist() + ["-"],
-                        "PARCELA": tabela_final['PARCELA'].tolist() + ["-"],
-                        "DESPESA": tabela_final['DESPESA'].tolist() + [""],
-                        "VALOR": tabela_final['VALOR_STR'].tolist() + [soma_total_str],
-                        "SITUAÇÃO": tabela_final['STATUS'].tolist() + ["-"]
-                    }
-                    
-                    mapa_visual = {
-                        "RAZÃO SOCIAL / DESCRIÇÃO": tabela_final['DESCRICAO'].tolist() + ["<b>TOTAL GERAL</b>"],
-                        "DATA": tabela_final['DATA'].tolist() + ["<b>-</b>"],
-                        "DOCUMENTO": tabela_final['DOCUMENTO'].tolist() + ["<b>-</b>"],
-                        "NOTA FISCAL": tabela_final['NOTA FISCAL'].tolist() + ["<b>-</b>"],
-                        "PARCELA": tabela_final['PARCELA'].tolist() + ["<b>-</b>"],
-                        "DESPESA": tabela_final['DESPESA'].tolist() + ["<b></b>"],
-                        "VALOR": tabela_final['VALOR_STR'].tolist() + [f"<b>{soma_total_str}</b>"],
-                        "SITUAÇÃO": tabela_final['STATUS'].tolist() + ["<b>-</b>"]
-                    }
-                    
-                    mapa_larguras = {
-                        "RAZÃO SOCIAL / DESCRIÇÃO": 300, "DATA": 90, "DOCUMENTO": 90, "NOTA FISCAL": 90,
-                        "PARCELA": 80, "DESPESA": 130, "VALOR": 110, "SITUAÇÃO": 120
-                    }
-                    
-                    cols_pdf = {}
-                    cabecalhos = []
-                    celulas = []
-                    larguras_colunas = []
-                    
-                    for col in colunas_selecionadas:
-                        cols_pdf[col] = mapa_pdf[col]
-                        cabecalhos.append(f"<b>{col}</b>")
-                        celulas.append(mapa_visual[col])
-                        larguras_colunas.append(mapa_larguras[col])
-                        
-                    df_pdf = pd.DataFrame(cols_pdf)
-
-                    if FPDF is not None:
-                        pdf_bytes = gerar_pdf_tabela(df_pdf, titulo_customizado_grafico + " (Tabela)", colunas_selecionadas, larguras_colunas)
-                        st.download_button(label="📄 Baixar Tabela em PDF isolada", data=pdf_bytes, file_name=f"Tabela_JNL_{dt_inicio.strftime('%d%m%y')}.pdf", mime="application/pdf", use_container_width=True, key="btn_pdf_tabela")
-                    else:
-                        st.error("⚠️ Biblioteca 'fpdf' não instalada.")
-
-                    cor_linhas_normais = '#F8F9FB'
-                    cor_linha_total = '#D0D5DD'
-                    cores_tabela = [cor_linhas_normais] * len(tabela_final) + [cor_linha_total]
-                    array_cores_fundo = [cores_tabela] * len(cabecalhos)
-                    
-                    alinhamentos_plotly = []
-                    for cab in cabecalhos:
-                        cab_up = cab.upper()
-                        if "RAZÃO" in cab_up or "DESCRIÇÃO" in cab_up: alinhamentos_plotly.append('left')
-                        elif "VALOR" in cab_up: alinhamentos_plotly.append('right')
-                        else: alinhamentos_plotly.append('center')
-
-                    fig_table = go.Figure(data=[go.Table(
-                        columnwidth=larguras_colunas,
-                        header=dict(values=cabecalhos, fill_color='#111111', align=alinhamentos_plotly, font=dict(family='Calibri', color='white', size=13)),
-                        cells=dict(values=celulas, fill_color=array_cores_fundo, align=alinhamentos_plotly, font=dict(family='Calibri', color='#1A1C1E', size=12), height=55)
-                    )])
-                    
-                    fig_table.update_layout(
-                        title=dict(text=f"<b>{titulo_customizado_grafico}</b>", font=dict(family='Calibri', color='#111111', size=16)),
-                        margin=dict(l=0, r=0, b=0, t=40), height=550, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
+            valores_visuais = [mapa[coluna][:-1] + [f"<b>{mapa[coluna][-1]}</b>"] for coluna in colunas_selecionadas]
+            cores_linha = ["#F8F9FB"] * len(tabela_final) + ["#D0D5DD"]
+            figura = go.Figure(
+                data=[
+                    go.Table(
+                        columnwidth=larguras,
+                        header={
+                            "values": [f"<b>{coluna}</b>" for coluna in colunas_selecionadas],
+                            "fill_color": "#111111",
+                            "align": alinhamentos,
+                            "font": {"family": "Calibri", "color": "white", "size": 13},
+                        },
+                        cells={
+                            "values": valores_visuais,
+                            "fill_color": [cores_linha] * len(colunas_selecionadas),
+                            "align": alinhamentos,
+                            "font": {"family": "Calibri", "color": "#1A1C1E", "size": 12},
+                            "height": 48,
+                        },
                     )
-                    st.plotly_chart(fig_table, use_container_width=True, config={'modeBarButtonsToAdd': ['toImage']})
+                ]
+            )
+            figura.update_layout(
+                title={"text": f"<b>{titulo_tabela}</b>"},
+                margin={"l": 0, "r": 0, "b": 0, "t": 40},
+                height=550,
+            )
+            st.plotly_chart(figura, use_container_width=True)
+        else:
+            st.dataframe(df_pdf, use_container_width=True, hide_index=True)
 
-                with aba_rel:
-                    st.write("⚙️ **Monte o seu Relatório Completo:** Arraste as páginas para a caixa de cima para incluir no PDF.")
-                    
-                    opcoes_relatorio = [
-                        "Gráfico: Por Entidade (Padrão)",
-                        "Gráfico: Categorizado (Por Tipo de Pagamento)",
-                        "Gráfico: Por Categoria de Despesa",
-                        "Tabela Detalhada"
-                    ]
-                    
-                    if sort_items is not None:
-                        if "estado_relatorio" not in st.session_state:
-                            st.session_state["estado_relatorio"] = [
-                                {'header': '✅ INCLUIR NO PDF (Arraste p/ ordenar)', 'items': opcoes_relatorio},
-                                {'header': '❌ LIXEIRA (Arraste p/ cá para remover)', 'items': []}
-                            ]
-                        
-                        res_rel = sort_items(st.session_state["estado_relatorio"], multi_containers=True, direction='vertical', key="ordem_rel_pdf")
-                        if res_rel:
-                            st.session_state["estado_relatorio"] = res_rel
-                            
-                        ordem_relatorio = st.session_state["estado_relatorio"][0]['items']
-                    else:
-                        st.info("⚠️ Instale 'streamlit-sortables' no terminal para ativar o arrastar e soltar.")
-                        ordem_relatorio = opcoes_relatorio
-                        
-                    if ordem_relatorio:
-                        safe_title = limpar_nome_arquivo(titulo_customizado_grafico)
-                        if not safe_title: safe_title = "Relatorio_JNL"
-                        file_name_final = f"{safe_title}.pdf"
-                        
-                        if FPDF is not None:
-                            pdf_relatorio = PDFReport()
-                            
-                            for item in ordem_relatorio:
-                                # Usamos o "dados_grafico_ent_plot" que vem cortado pelo Slider que o Senhor controlar na tela!
-                                if item == "Gráfico: Por Entidade (Padrão)" and not dados_grafico_ent_plot.empty:
-                                    append_pdf_grafico_imagem(pdf_relatorio, dados_grafico_ent_plot, f"{titulo_customizado_grafico} - Entidades", 'ENTIDADE', 'VALOR')
-                                elif item == "Gráfico: Categorizado (Por Tipo de Pagamento)" and not dados_grafico_cat.empty:
-                                    append_pdf_grafico_imagem(pdf_relatorio, dados_grafico_cat, f"{titulo_customizado_grafico} - Pagamentos", 'CATEGORIA', 'VALOR')
-                                elif item == "Gráfico: Por Categoria de Despesa" and not dados_grafico_desp.empty:
-                                    append_pdf_grafico_imagem(pdf_relatorio, dados_grafico_desp, f"{titulo_customizado_grafico} - Despesas", 'DESPESA', 'VALOR')
-                                elif item == "Tabela Detalhada" and not df_pdf.empty:
-                                    append_pdf_tabela(pdf_relatorio, df_pdf, f"{titulo_customizado_grafico} - Detalhado", colunas_selecionadas, larguras_colunas)
-                                    
-                            res = pdf_relatorio.output(dest='S')
-                            if isinstance(res, str): pdf_bytes = res.encode('latin-1')
-                            else: pdf_bytes = bytes(res)
-                            
-                            st.download_button(label="🚀 Baixar Relatório Completo (PDF)", data=pdf_bytes, file_name=file_name_final, mime="application/pdf", use_container_width=True, key="btn_relatorio_completo")
-                        else:
-                            st.error("⚠️ Biblioteca 'fpdf' não instalada.")
-                    else:
-                        st.info("⚠️ Arraste pelo menos um item para a caixa superior para gerar o relatório.")
-                            
-            else: st.info("Todos os valores encontrados estão zerados no período selecionado.")
-        else: st.warning("⚠️ Nenhuma data válida encontrada no ficheiro. Verifique a coluna de datas.")
-else: st.info("Aguardando o envio da planilha...")
+        assinatura_tabela = assinatura_dados(
+            titulo_tabela,
+            colunas_selecionadas,
+            len(df_pdf),
+            tabela_final["VALOR"].sum(),
+        )
+        if st.session_state.get("assinatura_pdf_tabela") != assinatura_tabela:
+            st.session_state.pop("pdf_tabela_pronto", None)
+
+        if FPDF is None:
+            st.error("PDF indisponÃ­vel. Confirme que fpdf2 estÃ¡ no requirements.txt.")
+        elif st.button("ðŸ“„ Preparar PDF da tabela", use_container_width=True):
+            with st.spinner("Gerando PDF..."):
+                pdf = PDFReport()
+                append_pdf_tabela(pdf, df_pdf, titulo_tabela, colunas_selecionadas, larguras)
+                st.session_state["pdf_tabela_pronto"] = finalizar_pdf(pdf)
+                st.session_state["assinatura_pdf_tabela"] = assinatura_tabela
+
+        if "pdf_tabela_pronto" in st.session_state:
+            st.download_button(
+                "â¬‡ï¸ Baixar Tabela em PDF",
+                data=st.session_state["pdf_tabela_pronto"],
+                file_name=f"Tabela_JNL_{inicio.strftime('%d%m%y')}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+
+    with aba_relatorio:
+        st.write("Monte o relatÃ³rio e sÃ³ depois clique em preparar. Isso evita estouro de memÃ³ria no servidor.")
+        opcoes = [
+            "GrÃ¡fico: Por Entidade (PadrÃ£o)",
+            "GrÃ¡fico: Categorizado (Por Tipo de Pagamento)",
+            "GrÃ¡fico: Por Categoria de Despesa",
+            "Tabela Detalhada",
+        ]
+
+        if sort_items is not None:
+            chave_relatorio = "estado_relatorio_v2"
+            if chave_relatorio not in st.session_state:
+                st.session_state[chave_relatorio] = [
+                    {"header": "âœ… INCLUIR NO PDF", "items": opcoes},
+                    {"header": "âŒ LIXEIRA", "items": []},
+                ]
+            ordem_atual = sort_items(
+                st.session_state[chave_relatorio],
+                multi_containers=True,
+                direction="vertical",
+                key="ordem_pdf_v2",
+            )
+            if ordem_atual:
+                st.session_state[chave_relatorio] = ordem_atual
+            ordem = st.session_state[chave_relatorio][0]["items"]
+        else:
+            ordem = opcoes
+
+        assinatura_relatorio = assinatura_dados(
+            titulo,
+            ordem,
+            limite,
+            len(tabela),
+            df_filtrado["VALOR"].sum(),
+        )
+        if st.session_state.get("assinatura_pdf_completo") != assinatura_relatorio:
+            st.session_state.pop("pdf_completo_pronto", None)
+
+        if not ordem:
+            st.info("Inclua pelo menos um item no relatÃ³rio.")
+        elif FPDF is None:
+            st.error("PDF indisponÃ­vel. Confirme que fpdf2 estÃ¡ no requirements.txt.")
+        elif st.button("ðŸš€ Preparar RelatÃ³rio Completo", use_container_width=True):
+            with st.spinner("Montando o relatÃ³rio completo..."):
+                pdf = PDFReport()
+                for item in ordem:
+                    if item == "GrÃ¡fico: Por Entidade (PadrÃ£o)" and not grafico_entidades_limitado.empty:
+                        append_pdf_grafico(pdf, grafico_entidades_limitado, f"{titulo} - Entidades", "ENTIDADE", "VALOR")
+                    elif item == "GrÃ¡fico: Categorizado (Por Tipo de Pagamento)" and not grafico_categorias.empty:
+                        append_pdf_grafico(pdf, grafico_categorias, f"{titulo} - Pagamentos", "CATEGORIA", "VALOR")
+                    elif item == "GrÃ¡fico: Por Categoria de Despesa" and not grafico_despesas.empty:
+                        append_pdf_grafico(pdf, grafico_despesas, f"{titulo} - Despesas", "DESPESA", "VALOR")
+                    elif item == "Tabela Detalhada" and not df_pdf.empty:
+                        append_pdf_tabela(pdf, df_pdf, f"{titulo} - Detalhado", colunas_selecionadas, larguras)
+
+                st.session_state["pdf_completo_pronto"] = finalizar_pdf(pdf)
+                st.session_state["assinatura_pdf_completo"] = assinatura_relatorio
+
+        if "pdf_completo_pronto" in st.session_state:
+            st.download_button(
+                "â¬‡ï¸ Baixar RelatÃ³rio Completo",
+                data=st.session_state["pdf_completo_pronto"],
+                file_name=f"{limpar_nome_arquivo(titulo)}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+
+except Exception as erro_geral:
+    st.error("O processamento encontrou um erro inesperado, mas o aplicativo continua aberto.")
+    st.error(str(erro_geral))
+    with st.expander("Detalhes tÃ©cnicos para correÃ§Ã£o"):
+        st.code(traceback.format_exc())
