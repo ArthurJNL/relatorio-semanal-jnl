@@ -1,8 +1,9 @@
-streamlit
-pandas
-streamlit-echarts
-openpyxl
-plotly
-fpdf
-matplotlib
-streamlit-sortables
+streamlit>=1.43,<2
+pandas>=2.2,<3
+streamlit-echarts>=0.4,<1
+plotly>=5.24,<7
+fpdf2>=2.8,<3
+streamlit-sortables>=0.3,<1
+matplotlib>=3.8,<4
+openpyxl>=3.1,<4
+xlrd>=2.0,<3
