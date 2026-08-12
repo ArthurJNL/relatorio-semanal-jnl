@@ -8,6 +8,7 @@ import tempfile
 import traceback 
 import unicodedata 
 import uuid 
+from pathlib import Path
 
 import pandas as pd 
 import streamlit as st 
@@ -33,6 +34,12 @@ try :
     from streamlit_sortables import sort_items 
 except Exception :
     sort_items =None 
+
+try :
+    from pypdf import PdfReader ,PdfWriter
+except Exception :
+    PdfReader =None
+    PdfWriter =None
 
 
 st .set_page_config (page_title ='RELATORIADOR',page_icon ='\U0001f6e1\ufe0f',layout ='wide')
@@ -676,12 +683,412 @@ def assinatura_dados (*partes ):
     return str (abs (hash (texto )))
 
 
+# -----------------------------------------------------------------------------
+# Modo automático: um bloco completo por planilha, com a respectiva capa.
+# A ordem abaixo reproduz o RELATÓRIO FINANCEIRO.pdf usado como modelo.
+# -----------------------------------------------------------------------------
+
+PASTA_APP =Path (__file__ ).resolve ().parent
+PASTA_CAPAS =PASTA_APP /'assets'
+
+ESPECIFICACOES_RELATORIOS ={
+    'notas_em_atraso':{
+        'nome_arquivo':'NOTAS EM ATRASO',
+        'titulo':'NOTAS EM ATRASO',
+        'capa':'INADIMPLÊNCIA.pdf',
+        'segundo_grafico':'pagamentos',
+        'situacao':True,
+    },
+    'notas_a_receber':{
+        'nome_arquivo':'RELAÇÃO DE NOTAS À RECEBER',
+        'titulo':'RELAÇÃO DE NOTAS À RECEBER',
+        'capa':'FLUXO DE CAIXA PROJETADO.pdf',
+        'segundo_grafico':'pagamentos',
+        'situacao':False,
+    },
+    'notas_recebidas':{
+        'nome_arquivo':'RELAÇÃO DE NOTAS RECEBIDAS',
+        'titulo':'RELAÇÃO DE NOTAS RECEBIDAS',
+        'capa':'FLUXO DE CAIXA REALIZADO.pdf',
+        'segundo_grafico':'pagamentos',
+        'situacao':False,
+    },
+    'fluxo_de_pagamento':{
+        'nome_arquivo':'FLUXO DE PAGAMENTO',
+        'titulo':'FLUXO DE PAGAMENTO',
+        'capa':'FLUXO DE CAIXA REALIZADO.pdf',
+        'segundo_grafico':'despesas',
+        'situacao':False,
+    },
+    'contas_a_pagar':{
+        'nome_arquivo':'RELAÇÃO DE CONTAS À PAGAR',
+        'titulo':'RELAÇÃO DE CONTAS À PAGAR',
+        'capa':'FLUXO DE CAIXA PROJETADO.pdf',
+        'segundo_grafico':'despesas',
+        'situacao':False,
+    },
+}
+
+ORDEM_PADRAO_AUTOMATICA =[
+    'notas_em_atraso',
+    'notas_a_receber',
+    'notas_recebidas',
+    'fluxo_de_pagamento',
+    'contas_a_pagar',
+]
+
+
+def normalizar_nome_entrada (nome ):
+    base =Path (str (nome )).stem
+    # Aceita cópias baixadas pelo navegador, como "ARQUIVO (1).xlsx".
+    base =re .sub (r'\s*\(\d+\)\s*$','',base )
+    base =remover_acentos (base )
+    return re .sub (r'[^A-Z0-9]+',' ',base ).strip ()
+
+
+MAPA_NOMES_AUTOMATICOS ={
+    normalizar_nome_entrada (especificacao ['nome_arquivo']):chave
+    for chave ,especificacao in ESPECIFICACOES_RELATORIOS .items ()
+}
+
+
+def reconhecer_tipo_relatorio (nome_arquivo ):
+    return MAPA_NOMES_AUTOMATICOS .get (normalizar_nome_entrada (nome_arquivo ))
+
+
+@st .cache_data (show_spinner =False )
+def preparar_arquivo_automatico (nome_arquivo ,conteudo ):
+    bruto =ler_arquivo (nome_arquivo ,conteudo )
+    blocos_arquivo =processar_excel_hibrido (bruto )
+    resumos_arquivo =[]
+    for _ ,bloco in blocos_arquivo :
+        resumo =preparar_resumo (bloco )
+        if resumo is not None and not resumo .empty :
+            resumos_arquivo .append (resumo )
+
+    if not resumos_arquivo :
+        raise ValueError ('Nenhuma tabela válida foi reconhecida dentro da planilha.')
+
+    dados =pd .concat (resumos_arquivo ,ignore_index =True )
+    dados =dados .dropna (subset =['DATA'])
+    dados =dados [dados ['VALOR']>0 ].copy ()
+    if dados .empty :
+        raise ValueError ('A planilha não possui datas e valores válidos para o relatório.')
+    return dados
+
+
+def componentes_do_relatorio (dados ):
+    df =dados .copy ()
+    df ['ENTIDADE_GRAFICO']=df .apply (entidade_para_grafico ,axis =1 )
+
+    entidades =(
+        df .groupby ('ENTIDADE_GRAFICO',as_index =False )['VALOR']
+        .sum ()
+        .rename (columns ={'ENTIDADE_GRAFICO':'ENTIDADE'})
+        .query ('VALOR > 0')
+        .sort_values ('VALOR',ascending =False )
+    )
+
+    categorias =df .copy ()
+    categorias ['CATEGORIA']=categorias ['DOCUMENTO'].map (categorizar_pagamento )
+    pagamentos =(
+        categorias .groupby ('CATEGORIA',as_index =False )['VALOR']
+        .sum ()
+        .query ('VALOR > 0')
+        .sort_values ('VALOR',ascending =False )
+    )
+
+    com_despesa =df [df ['DESPESA']!='']
+    despesas =(
+        com_despesa .groupby ('DESPESA',as_index =False )['VALOR']
+        .sum ()
+        .query ('VALOR > 0')
+        .sort_values ('VALOR',ascending =False )
+        if not com_despesa .empty
+        else pd .DataFrame (columns =['DESPESA','VALOR'])
+    )
+
+    detalhe =(
+        df .groupby (
+            ['DESCRICAO','DATA','DOCUMENTO','NOTA FISCAL','PARCELA','DESPESA'],
+            as_index =False,
+            dropna =False,
+        )['VALOR']
+        .sum ()
+        .query ('VALOR > 0')
+        .sort_values (['DATA','DESCRICAO'])
+    )
+    detalhe ['STATUS']=detalhe ['DATA'].map (calcular_status_vencimento )
+    detalhe ['DATA']=detalhe ['DATA'].dt .strftime ('%d/%m/%Y')
+    return entidades ,pagamentos ,despesas ,detalhe
+
+
+def tabela_automatica (detalhe ,especificacao ):
+    total =formatar_contabil (detalhe ['VALOR'].sum ())
+    valores =detalhe ['VALOR'].map (formatar_contabil ).tolist ()
+
+    if especificacao ['segundo_grafico']=='despesas':
+        colunas =['DATA','RAZÃO SOCIAL / DESCRIÇÃO','DESPESA','VALOR']
+        larguras =[82 ,340 ,125 ,110 ]
+        tabela =pd .DataFrame ({
+            'DATA':detalhe ['DATA'].tolist ()+['-'],
+            'RAZÃO SOCIAL / DESCRIÇÃO':detalhe ['DESCRICAO'].tolist ()+['TOTAL GERAL'],
+            'DESPESA':detalhe ['DESPESA'].replace ('','-').tolist ()+[''],
+            'VALOR':valores +[total ],
+        })
+        return tabela ,colunas ,larguras
+
+    colunas =['DATA','RAZÃO SOCIAL / DESCRIÇÃO','DOCUMENTO','NOTA FISCAL','VALOR']
+    larguras =[82 ,300 ,90 ,90 ,110 ]
+    mapa ={
+        'DATA':detalhe ['DATA'].tolist ()+['-'],
+        'RAZÃO SOCIAL / DESCRIÇÃO':detalhe ['DESCRICAO'].tolist ()+['TOTAL GERAL'],
+        'DOCUMENTO':detalhe ['DOCUMENTO'].tolist ()+['-'],
+        'NOTA FISCAL':detalhe ['NOTA FISCAL'].tolist ()+['-'],
+        'VALOR':valores +[total ],
+    }
+    if especificacao ['situacao']:
+        colunas .append ('SITUAÇÃO')
+        larguras .append (125 )
+        mapa ['SITUAÇÃO']=detalhe ['STATUS'].tolist ()+['-']
+    return pd .DataFrame ({coluna :mapa [coluna ]for coluna in colunas }),colunas ,larguras
+
+
+def gerar_paginas_de_um_relatorio (chave_relatorio ,dados ):
+    especificacao =ESPECIFICACOES_RELATORIOS [chave_relatorio ]
+    titulo =especificacao ['titulo']
+    entidades ,pagamentos ,despesas ,detalhe =componentes_do_relatorio (dados )
+    tabela ,colunas ,larguras =tabela_automatica (detalhe ,especificacao )
+
+    pdf =PDFReport ()
+    if not entidades .empty :
+        append_pdf_grafico (pdf ,entidades ,f"{titulo} - Entidades",'ENTIDADE','VALOR')
+
+    if especificacao ['segundo_grafico']=='despesas':
+        if not despesas .empty :
+            append_pdf_grafico (pdf ,despesas ,f"{titulo} - Despesas",'DESPESA','VALOR')
+    elif not pagamentos .empty :
+        append_pdf_grafico (pdf ,pagamentos ,f"{titulo} - Pagamentos",'CATEGORIA','VALOR')
+
+    append_pdf_tabela (pdf ,tabela ,f"{titulo} - Detalhado",colunas ,larguras )
+    return finalizar_pdf (pdf )
+
+
+def adicionar_pdf_ao_writer (writer ,origem ):
+    leitor =PdfReader (origem )
+    for pagina in leitor .pages :
+        writer .add_page (pagina )
+
+
+def gerar_relatorio_financeiro_automatico (ordem ,dados_por_tipo ):
+    if FPDF is None :
+        raise RuntimeError ('fpdf2 não está instalado.')
+    if PdfReader is None or PdfWriter is None :
+        raise RuntimeError ('pypdf não está instalado.')
+
+    writer =PdfWriter ()
+    for chave in ordem :
+        especificacao =ESPECIFICACOES_RELATORIOS [chave ]
+        caminho_capa =PASTA_CAPAS /especificacao ['capa']
+        if not caminho_capa .exists ():
+            raise FileNotFoundError (f"Capa não encontrada: {caminho_capa.name}")
+
+        adicionar_pdf_ao_writer (writer ,str (caminho_capa ))
+        paginas =gerar_paginas_de_um_relatorio (chave ,dados_por_tipo [chave ])
+        adicionar_pdf_ao_writer (writer ,io .BytesIO (paginas ))
+
+    saida =io .BytesIO ()
+    writer .write (saida )
+    return saida .getvalue ()
+
+
+def executar_modo_automatico (arquivos ):
+    st .markdown ('# Relatório financeiro automático')
+    st .caption (
+        'O nome de cada planilha define o relatório, os gráficos, a tabela e a capa. '
+        'Cada item abaixo será gerado como um bloco independente, exatamente como no PDF-modelo.'
+    )
+
+    arquivos_por_tipo ={}
+    linhas_diagnostico =[]
+    for arquivo in arquivos :
+        chave =reconhecer_tipo_relatorio (arquivo .name )
+        if chave is None :
+            linhas_diagnostico .append ({
+                'Arquivo':arquivo .name,
+                'Reconhecimento':'Não reconhecido',
+                'Capa':'-',
+            })
+            continue
+        especificacao =ESPECIFICACOES_RELATORIOS [chave ]
+        if chave in arquivos_por_tipo :
+            linhas_diagnostico .append ({
+                'Arquivo':arquivo .name,
+                'Reconhecimento':'Duplicado — ignorado',
+                'Capa':especificacao ['capa'],
+            })
+            continue
+        arquivos_por_tipo [chave ]=arquivo
+        linhas_diagnostico .append ({
+            'Arquivo':arquivo .name,
+            'Reconhecimento':especificacao ['titulo'],
+            'Capa':especificacao ['capa'],
+        })
+
+    st .dataframe (pd .DataFrame (linhas_diagnostico ),use_container_width =True ,hide_index =True )
+    if not arquivos_por_tipo :
+        st .error ('Nenhuma planilha foi reconhecida. Confira os nomes exibidos na lista de arquivos esperados.')
+        with st .expander ('Nomes de planilha aceitos'):
+            for chave in ORDEM_PADRAO_AUTOMATICA :
+                st .write (f"• {ESPECIFICACOES_RELATORIOS[chave]['nome_arquivo']}.xlsx")
+        return
+
+    faltantes =[
+        ESPECIFICACOES_RELATORIOS [chave ]['nome_arquivo']+'.xlsx'
+        for chave in ORDEM_PADRAO_AUTOMATICA
+        if chave not in arquivos_por_tipo
+    ]
+    if faltantes :
+        st .warning ('O PDF será gerado com os arquivos reconhecidos. Faltaram: '+', '.join (faltantes ))
+    else :
+        st .success ('As cinco planilhas do relatório completo foram reconhecidas.')
+
+    dados_por_tipo ={}
+    erros =[]
+    for chave ,arquivo in arquivos_por_tipo .items ():
+        try :
+            dados_por_tipo [chave ]=preparar_arquivo_automatico (arquivo .name ,arquivo .getvalue ())
+        except Exception as erro :
+            erros .append (f"{arquivo.name}: {erro}")
+    if erros :
+        for erro in erros :
+            st .error (erro )
+    if not dados_por_tipo :
+        return
+
+    data_minima =min (df ['DATA'].min ()for df in dados_por_tipo .values ()).date ()
+    data_maxima =max (df ['DATA'].max ()for df in dados_por_tipo .values ()).date ()
+    with st .sidebar :
+        st .subheader ('📅 Filtro do relatório automático')
+        periodo =st .date_input (
+            'Selecione De / Até:',
+            value =(data_minima ,data_maxima ),
+            min_value =data_minima,
+            max_value =data_maxima,
+            format ='DD/MM/YYYY',
+            key ='periodo_automatico',
+        )
+    if isinstance (periodo ,(tuple ,list ))and len (periodo )==2 :
+        inicio ,fim =periodo
+    elif isinstance (periodo ,(tuple ,list ))and len (periodo )==1 :
+        inicio =fim =periodo [0 ]
+    else :
+        inicio ,fim =data_minima ,data_maxima
+
+    dados_filtrados ={}
+    for chave ,df in dados_por_tipo .items ():
+        filtro =(df ['DATA']>=pd .Timestamp (inicio ))&(df ['DATA']<=pd .Timestamp (fim ))
+        recorte =df .loc [filtro ].copy ()
+        if not recorte .empty :
+            dados_filtrados [chave ]=recorte
+
+    if not dados_filtrados :
+        st .info ('Nenhum lançamento foi encontrado no período selecionado.')
+        return
+
+    ordem_disponivel =[chave for chave in ORDEM_PADRAO_AUTOMATICA if chave in dados_filtrados ]
+    rotulo_para_chave ={
+        ESPECIFICACOES_RELATORIOS [chave ]['titulo']:chave
+        for chave in ordem_disponivel
+    }
+    rotulos_padrao =[ESPECIFICACOES_RELATORIOS [chave ]['titulo']for chave in ordem_disponivel ]
+
+    st .subheader ('Ordem dos blocos no PDF')
+    st .caption ('Cada bloco leva sua capa vinculada. Arraste para ordenar ou mova para a lixeira para excluir.')
+    if sort_items is not None :
+        assinatura_opcoes ='|'.join (rotulos_padrao )
+        if st .session_state .get ('assinatura_blocos_auto')!=assinatura_opcoes :
+            st .session_state ['estado_blocos_auto']=[
+                {'header':'✅ INCLUIR NO PDF','items':rotulos_padrao },
+                {'header':'❌ NÃO INCLUIR','items':[]},
+            ]
+            st .session_state ['assinatura_blocos_auto']=assinatura_opcoes
+        estado =sort_items (
+            st .session_state ['estado_blocos_auto'],
+            multi_containers =True,
+            direction ='vertical',
+            key ='ordenador_blocos_auto',
+        )
+        if estado :
+            st .session_state ['estado_blocos_auto']=estado
+        rotulos_escolhidos =st .session_state ['estado_blocos_auto'][0 ]['items']
+    else :
+        st .info ('O arrastar e soltar está indisponível. Selecione os itens já na ordem desejada.')
+        rotulos_escolhidos =st .multiselect (
+            'Relatórios incluídos',
+            options =rotulos_padrao,
+            default =rotulos_padrao,
+            key ='blocos_auto_fallback',
+        )
+
+    ordem =[rotulo_para_chave [rotulo ]for rotulo in rotulos_escolhidos if rotulo in rotulo_para_chave ]
+    if not ordem :
+        st .info ('Inclua pelo menos um bloco no PDF.')
+        return
+
+    resumo =[]
+    for posicao ,chave in enumerate (ordem ,start =1 ):
+        especificacao =ESPECIFICACOES_RELATORIOS [chave ]
+        df =dados_filtrados [chave ]
+        resumo .append ({
+            'Ordem':posicao,
+            'Relatório':especificacao ['titulo'],
+            'Capa':especificacao ['capa'],
+            'Itens':len (df ),
+            'Total':formatar_contabil (df ['VALOR'].sum ()),
+        })
+    st .dataframe (pd .DataFrame (resumo ),use_container_width =True ,hide_index =True )
+
+    assinatura =assinatura_dados (
+        ordem,
+        inicio,
+        fim,
+        [(chave ,len (dados_filtrados [chave ]),dados_filtrados [chave ]['VALOR'].sum ())for chave in ordem ],
+    )
+    if st .session_state .get ('assinatura_pdf_automatico')!=assinatura :
+        st .session_state .pop ('pdf_automatico_pronto',None )
+
+    if FPDF is None or PdfWriter is None :
+        st .error ('PDF indisponível. Confirme fpdf2 e pypdf no requirements.txt.')
+    elif st .button ('🚀 Preparar relatório financeiro completo',type ='primary',use_container_width =True ):
+        with st .spinner ('Gerando capas, gráficos e tabelas na ordem escolhida...'):
+            st .session_state ['pdf_automatico_pronto']=gerar_relatorio_financeiro_automatico (
+                ordem,
+                dados_filtrados,
+            )
+            st .session_state ['assinatura_pdf_automatico']=assinatura
+
+    if 'pdf_automatico_pronto'in st .session_state :
+        st .download_button (
+            '⬇️ Baixar RELATÓRIO FINANCEIRO.pdf',
+            data =st .session_state ['pdf_automatico_pronto'],
+            file_name ='RELATÓRIO FINANCEIRO.pdf',
+            mime ='application/pdf',
+            use_container_width =True,
+        )
+
+
 with st .sidebar :
     st .title ('\U0001f6e1\ufe0f RELATORIADOR')
     st .markdown ('---')
     st .subheader ('\U0001f4c1 GERADOR')
+    modo =st .radio (
+    'Modo de geração',
+    ['Relatório completo automático','Individual / personalizado'],
+    help ='O modo automático reconhece os cinco nomes padronizados e inclui as capas. O modo individual mantém a personalização anterior.',
+    )
     arquivos =st .file_uploader (
-    'Suba as planilhas que deseja transformar',
+    'Suba uma ou mais planilhas',
     type =['xlsx','xls','csv'],
     accept_multiple_files =True ,
     )
@@ -690,11 +1097,25 @@ with st .sidebar :
         st .write (f"ECharts: {'OK'if st_echarts else 'indispon\xedvel'}")
         st .write (f"Plotly: {'OK'if go else 'indispon\xedvel'}")
         st .write (f"PDF: {'OK'if FPDF else 'indispon\xedvel'}")
+        st .write (f"Mesclagem de capas: {'OK'if PdfWriter else 'indisponível'}")
         st .write (f"Ordenador: {'OK'if sort_items else 'indispon\xedvel'}")
+        capas_ok =all ((PASTA_CAPAS /item ['capa']).exists ()for item in ESPECIFICACOES_RELATORIOS .values ())
+        st .write (f"Capas: {'OK'if capas_ok else 'arquivo ausente'}")
 
 
 if not arquivos :
     st .info ('Aguardando o envio da planilha...')
+    st .stop ()
+
+
+if modo =='Relatório completo automático':
+    try :
+        executar_modo_automatico (arquivos )
+    except Exception as erro_automatico :
+        st .error ('Não foi possível concluir o relatório automático.')
+        st .error (str (erro_automatico ))
+        with st .expander ('Detalhes técnicos para correção'):
+            st .code (traceback .format_exc ())
     st .stop ()
 
 
