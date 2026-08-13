@@ -3,5 +3,4 @@ openpyxl
 xlrd
 fpdf2
 pypdf
-matplotlib
 streamlit-sortables

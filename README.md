@@ -2,6 +2,8 @@
 
 Esta versão mantém o gerador individual/personalizado e adiciona o modo **Relatório completo automático**.
 
+Os gráficos e as tabelas exibidos no site usam componentes nativos do Streamlit. Os gráficos dos PDFs são vetoriais e desenhados diretamente pelo `fpdf2`, sem ECharts, Plotly ou Matplotlib. Isso reduz o tempo de instalação e de inicialização no Streamlit Community Cloud.
+
 ## Como usar o modo automático
 
 1. Envie uma ou mais planilhas.
@@ -26,7 +28,11 @@ Selecione **Individual / personalizado** para continuar usando títulos, gráfic
 
 ```bash
 python -m pip install -r requirements.txt
-streamlit run app.py
+streamlit run relatoriador.py
 ```
 
-Mantenha a pasta `assets` ao lado do `app.py`, pois ela contém as três capas usadas no relatório automático.
+Mantenha a pasta `assets` ao lado do `relatoriador.py`, pois ela contém as três capas usadas no relatório automático.
+
+## Atualização no GitHub
+
+Substitua, na raiz do repositório, os arquivos `relatoriador.py`, `requirements.txt` e `README.md` pelos arquivos deste pacote. Faça um único commit com os três arquivos. A pasta `assets` não deve ser alterada.

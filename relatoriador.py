@@ -2,28 +2,14 @@
 
 import io 
 import math 
-import os 
 import re 
-import tempfile 
 import traceback 
 import unicodedata 
-import uuid 
 from pathlib import Path
 
 import pandas as pd 
 import streamlit as st 
 
-
-# Componentes opcionais. A aus\xeancia de um deles n\xe3o impede o site de abrir.
-try :
-    from streamlit_echarts import st_echarts 
-except Exception :
-    st_echarts =None 
-
-try :
-    import plotly .graph_objects as go 
-except Exception :
-    go =None 
 
 try :
     from fpdf import FPDF 
@@ -522,21 +508,17 @@ if FPDF is not None :
             pdf .set_xy (inicio_x ,inicio_y +altura_linha )
 
 
+    def encurtar_texto_pdf (pdf ,texto ,largura ):
+        texto =limpar_texto_pdf (texto )
+        if pdf .get_string_width (texto )<=largura :
+            return texto
+        sufixo ='...'
+        while texto and pdf .get_string_width (texto +sufixo )>largura :
+            texto =texto [:-1 ]
+        return texto .rstrip ()+sufixo
+
+
     def append_pdf_grafico (pdf ,df ,titulo ,coluna_nome ,coluna_valor ):
-        pdf .add_page ()
-        pdf .set_font ('Arial','B',14 )
-        pdf .cell (0 ,10 ,limpar_texto_pdf (titulo ),border =0 ,ln =1 ,align ='C')
-
-        try :
-            import matplotlib 
-
-            matplotlib .use ('Agg')
-            import matplotlib .pyplot as plt 
-        except Exception :
-            pdf .set_font ('Arial','',10 )
-            pdf .multi_cell (0 ,10 ,'Biblioteca matplotlib nao disponivel.',align ='C')
-            return 
-
         df_plot =(
         df [[coluna_nome ,coluna_valor ]]
         .dropna ()
@@ -544,55 +526,65 @@ if FPDF is not None :
         .sort_values (coluna_valor ,ascending =False )
         .reset_index (drop =True )
         )
+
+        pdf .add_page ()
         if df_plot .empty :
+            pdf .set_font ('Arial','B',14 )
+            pdf .cell (0 ,10 ,limpar_texto_pdf (titulo ),border =0 ,ln =1 ,align ='C')
             pdf .set_font ('Arial','',10 )
             pdf .multi_cell (0 ,10 ,'Nenhum dado disponivel para o grafico.',align ='C')
-            return 
+            return
 
-        nomes =df_plot [coluna_nome ].astype (str ).map (
-        lambda nome :f"{nome [:48 ]}..."if len (nome )>48 else nome 
-        )
         valores =df_plot [coluna_valor ].astype (float ).tolist ()
-        posicoes =list (range (len (df_plot )))
-        altura_figura =min (max (4.8 ,len (df_plot )*0.38 ),9.2 )
+        valor_maximo =max (max (valores ),1 )
+        inicio_y =30
+        limite_y =272
+        espaco_vertical =limite_y -inicio_y
+        minimo_altura_linha =4.0
+        linhas_por_pagina =max (1 ,int (espaco_vertical /minimo_altura_linha ))
 
-        figura ,eixo =plt .subplots (figsize =(11.2 ,altura_figura ))
-        eixo .barh (posicoes ,valores ,color ='#111111',height =0.62 )
-        eixo .set_yticks (posicoes )
-        eixo .set_yticklabels (nomes .tolist (),fontsize =8.5 )
-        eixo .invert_yaxis ()
-        eixo .xaxis .set_visible (False )
-        eixo .tick_params (axis ='y',length =0 ,pad =5 )
-        for borda in ['top','right','bottom','left']:
-            eixo .spines [borda ].set_visible (False )
+        for inicio in range (0 ,len (df_plot ),linhas_por_pagina ):
+            if inicio >0 :
+                pdf .add_page ()
+            titulo_pagina =titulo if inicio ==0 else f"{titulo} - Continuacao"
+            pdf .set_font ('Arial','B',14 )
+            pdf .cell (0 ,10 ,limpar_texto_pdf (titulo_pagina ),border =0 ,ln =1 ,align ='C')
 
-        maximo =max (max (valores ),1 )
-        eixo .set_xlim (0 ,maximo *1.34 )
-        for posicao ,valor in zip (posicoes ,valores ):
-            eixo .text (
-            valor +maximo *0.018 ,
-            posicao ,
-            formatar_contabil (valor ),
-            va ='center',
-            ha ='left',
-            fontsize =8.5 ,
-            fontweight ='bold',
-            color ='#111111',
-            )
+            trecho =df_plot .iloc [inicio :inicio +linhas_por_pagina ]
+            altura_linha =min (8.0 ,max (minimo_altura_linha ,espaco_vertical /max (len (trecho ),1 )))
+            tamanho_fonte =min (8.0 ,max (4.0 ,altura_linha *0.82 ))
+            largura_rotulo =76
+            x_rotulo =10
+            x_barra =89
+            largura_maxima_barra =72
+            largura_valor =37
+            y =inicio_y
 
-        figura .subplots_adjust (left =0.40 ,right =0.94 ,top =0.97 ,bottom =0.04 )
-        caminho =os .path .join (tempfile .gettempdir (),f"relatoriador_{uuid .uuid4 ().hex }.png")
-        figura .savefig (caminho ,dpi =160 ,bbox_inches ='tight',pad_inches =0.12 ,facecolor ='white')
-        plt .close (figura )
+            pdf .set_draw_color (210 ,213 ,217 )
+            pdf .line (x_barra ,y ,x_barra ,y +altura_linha *len (trecho ))
 
-        try :
-            y =max (pdf .get_y ()+5 ,25 )
-            pdf .image (caminho ,x =10 ,y =y ,w =190 )
-        finally :
-            try :
-                os .remove (caminho )
-            except OSError :
-                pass 
+            for _ ,linha in trecho .iterrows ():
+                nome =linha [coluna_nome ]
+                valor =float (linha [coluna_valor ])
+                largura_barra =max (0.8 ,(valor /valor_maximo )*largura_maxima_barra )
+
+                pdf .set_font ('Arial','',tamanho_fonte )
+                pdf .set_text_color (26 ,28 ,30 )
+                nome_curto =encurtar_texto_pdf (pdf ,nome ,largura_rotulo -2 )
+                pdf .set_xy (x_rotulo ,y )
+                pdf .cell (largura_rotulo ,altura_linha ,nome_curto ,border =0 ,align ='R')
+
+                pdf .set_fill_color (17 ,17 ,17 )
+                altura_barra =max (1.2 ,altura_linha *0.58 )
+                y_barra =y +(altura_linha -altura_barra )/2
+                pdf .rect (x_barra ,y_barra ,largura_barra ,altura_barra ,style ='F')
+
+                pdf .set_font ('Arial','B',tamanho_fonte )
+                pdf .set_xy (x_barra +largura_barra +1 ,y )
+                pdf .cell (largura_valor ,altura_linha ,limpar_texto_pdf (formatar_contabil (valor )),border =0 ,align ='L')
+                y +=altura_linha
+
+            pdf .set_text_color (0 ,0 ,0 )
 
 
     def finalizar_pdf (pdf ):
@@ -602,80 +594,29 @@ if FPDF is not None :
         return bytes (resultado )
 
 
-def opcoes_echarts (titulo ,nomes ,valores ,largura_rotulo =220 ):
-    dados =[]
-    for valor in valores :
-        numero =float (valor )
-        dados .append (
-        {
-        'value':numero ,
-        'label':{
-        'show':True ,
-        'position':'right',
-        'formatter':formatar_contabil (numero ),
-        'color':'#111111',
-        },
-        }
-        )
-
-    return {
-    'backgroundColor':'transparent',
-    'title':{
-    'text':titulo ,
-    'left':'center',
-    'textStyle':{'color':'#111111','fontSize':18 ,'fontFamily':'Calibri'},
-    },
-    'toolbox':{
-    'feature':{
-    'saveAsImage':{
-    'show':True ,
-    'title':'Baixar JPG',
-    'type':'jpeg',
-    'backgroundColor':'#FFFFFF',
-    'pixelRatio':2 ,
-    }
-    }
-    },
-    'tooltip':{'trigger':'axis','axisPointer':{'type':'shadow'}},
-    'grid':{'top':80 ,'left':'1%','right':'17%','bottom':'2%','containLabel':True },
-    'xAxis':{
-    'type':'value',
-    'splitLine':{'lineStyle':{'type':'dashed','color':'#E0E4E8'}},
-    },
-    'yAxis':{
-    'type':'category',
-    'data':nomes ,
-    'axisLabel':{
-    'interval':0 ,
-    'width':largura_rotulo ,
-    'overflow':'break',
-    'lineHeight':14 ,
-    'color':'#1A1C1E',
-    },
-    },
-    'series':[
-    {
-    'type':'bar',
-    'data':dados ,
-    'itemStyle':{'color':'#111111','borderRadius':[0 ,8 ,8 ,0 ]},
-    }
-    ],
-    }
-
-
 def mostrar_grafico (titulo ,dataframe ,coluna_nome ,coluna_valor ,altura_por_item =50 ):
-    dados =dataframe .sort_values (coluna_valor ,ascending =True )
-    altura =max (400 ,len (dados )*altura_por_item )
-    if st_echarts is not None :
-        opcoes =opcoes_echarts (
-        titulo ,
-        dados [coluna_nome ].astype (str ).tolist (),
-        dados [coluna_valor ].astype (float ).tolist (),
-        )
-        st_echarts (options =opcoes ,height =f"{altura }px")
-    else :
-        st .warning ('O gr\xe1fico ECharts est\xe1 indispon\xedvel, mas os dados continuam acess\xedveis.')
-        st .bar_chart (dados .set_index (coluna_nome )[coluna_valor ],horizontal =True )
+    dados =(
+    dataframe [[coluna_nome ,coluna_valor ]]
+    .dropna ()
+    .copy ()
+    .sort_values (coluna_valor ,ascending =False )
+    )
+    if dados .empty :
+        st .info ('Nenhum dado disponível para o gráfico.')
+        return
+
+    altura =min (900 ,max (400 ,len (dados )*altura_por_item ))
+    st .subheader (titulo )
+    st .bar_chart (
+    dados ,
+    x =coluna_nome ,
+    y =coluna_valor ,
+    color ='#111111',
+    horizontal =True ,
+    height =altura ,
+    use_container_width =True ,
+    )
+    st .caption ('Passe o cursor sobre as barras para consultar os valores exatos.')
 
 
 def assinatura_dados (*partes ):
@@ -1094,8 +1035,8 @@ with st .sidebar :
     )
 
     with st .expander ('Diagn\xf3stico das bibliotecas'):
-        st .write (f"ECharts: {'OK'if st_echarts else 'indispon\xedvel'}")
-        st .write (f"Plotly: {'OK'if go else 'indispon\xedvel'}")
+        st .write ('Gráficos na tela: OK (Streamlit nativo)')
+        st .write ('Tabelas na tela: OK (Streamlit nativo)')
         st .write (f"PDF: {'OK'if FPDF else 'indispon\xedvel'}")
         st .write (f"Mesclagem de capas: {'OK'if PdfWriter else 'indisponível'}")
         st .write (f"Ordenador: {'OK'if sort_items else 'indispon\xedvel'}")
@@ -1348,47 +1289,19 @@ try :
         df_pdf =pd .DataFrame ({coluna :mapa [coluna ]for coluna in colunas_selecionadas })
         larguras =[larguras_mapa [coluna ]for coluna in colunas_selecionadas ]
 
-        if go is not None :
-            alinhamentos =[]
-            for coluna in colunas_selecionadas :
-                coluna_limpa =remover_acentos (coluna )
-                if 'RAZAO'in coluna_limpa or 'DESCRI'in coluna_limpa :
-                    alinhamentos .append ('left')
-                elif 'VALOR'in coluna_limpa :
-                    alinhamentos .append ('right')
-                else :
-                    alinhamentos .append ('center')
+        def estilo_linha_total (linha ):
+            if linha .name ==df_pdf .index [-1 ]:
+                return ['background-color: #D0D5DD; font-weight: 700']*len (linha )
+            return ['background-color: #F8F9FB']*len (linha )
 
-            valores_visuais =[mapa [coluna ][:-1 ]+[f"<b>{mapa [coluna ][-1 ]}</b>"]for coluna in colunas_selecionadas ]
-            cores_linha =['#F8F9FB']*len (tabela_final )+['#D0D5DD']
-            figura =go .Figure (
-            data =[
-            go .Table (
-            columnwidth =larguras ,
-            header ={
-            'values':[f"<b>{coluna }</b>"for coluna in colunas_selecionadas ],
-            'fill_color':'#111111',
-            'align':alinhamentos ,
-            'font':{'family':'Calibri','color':'white','size':13 },
-            },
-            cells ={
-            'values':valores_visuais ,
-            'fill_color':[cores_linha ]*len (colunas_selecionadas ),
-            'align':alinhamentos ,
-            'font':{'family':'Calibri','color':'#1A1C1E','size':12 },
-            'height':48 ,
-            },
-            )
-            ]
-            )
-            figura .update_layout (
-            title ={'text':f"<b>{titulo_tabela }</b>"},
-            margin ={'l':0 ,'r':0 ,'b':0 ,'t':40 },
-            height =550 ,
-            )
-            st .plotly_chart (figura ,use_container_width =True )
-        else :
-            st .dataframe (df_pdf ,use_container_width =True ,hide_index =True )
+        st .subheader (titulo_tabela )
+        altura_tabela =min (850 ,max (280 ,(len (df_pdf )+1 )*36 ))
+        st .dataframe (
+        df_pdf .style .apply (estilo_linha_total ,axis =1 ),
+        use_container_width =True ,
+        hide_index =True ,
+        height =altura_tabela ,
+        )
 
         assinatura_tabela =assinatura_dados (
         titulo_tabela ,
