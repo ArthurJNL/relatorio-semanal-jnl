@@ -1,11 +1,7 @@
-streamlit==1.49.1
-pandas==2.2.3
-openpyxl==3.1.5
-xlrd==2.0.1
-fpdf2==2.8.4
-pypdf==6.10.0
-matplotlib==3.10.8
-plotly==6.3.0
-streamlit-echarts==0.4.0
-streamlit-sortables==0.3.1
-# forçar reinstalação 13-08-2026
+pandas
+openpyxl
+xlrd
+fpdf2
+pypdf
+matplotlib
+streamlit-sortables
