@@ -4,6 +4,14 @@ Esta versão mantém o gerador individual/personalizado e adiciona o modo **Rela
 
 Os gráficos e as tabelas exibidos no site usam componentes nativos do Streamlit. Os gráficos dos PDFs são vetoriais e desenhados diretamente pelo `fpdf2`, sem ECharts, Plotly ou Matplotlib. Isso reduz o tempo de instalação e de inicialização no Streamlit Community Cloud.
 
+Correções finais desta versão:
+
+- Normalização de `LOCACAO` e `LOCACÃO` para `LOCAÇÃO` (e das respectivas formas no plural).
+- Máscara monetária brasileira centralizada e independente de configuração regional, sempre no formato `R$ 2.560,00`.
+- Validação obrigatória antes de escrever qualquer moeda: uma saída como `R$ 2.560.00` interrompe a geração em vez de produzir um PDF incorreto.
+- Valores monetários recebidos como `2.560,00`, `2560.00` ou até `2.560.00` são normalizados para o mesmo padrão brasileiro.
+- Imediatamente antes da impressão no PDF, o último separador seguido por dois centavos é forçado para vírgula; o ponto dos milhares permanece intacto.
+
 ## Como usar o modo automático
 
 1. Envie uma ou mais planilhas.

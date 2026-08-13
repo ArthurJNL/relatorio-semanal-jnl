@@ -5,6 +5,7 @@ import math
 import re 
 import traceback 
 import unicodedata 
+from decimal import Decimal ,InvalidOperation ,ROUND_HALF_UP
 from pathlib import Path
 
 import pandas as pd 
@@ -84,14 +85,44 @@ def remover_acentos (texto ):
 
 
 DESPESAS_VALIDAS_LIMPAS =[remover_acentos (item )for item in DESPESAS_VALIDAS ]
+PADRAO_MOEDA_BRL =re .compile (r'^R\$ -?(?:0|[1-9]\d{0,2}(?:\.\d{3})*),\d{2}$')
+
+
+def forcar_virgula_nos_centavos (texto ):
+    texto =str (texto ).strip ()
+    texto =re .sub (r'[.,](\d{2})$',r',\1',texto )
+    return texto
+
+
+def validar_mascara_brl (texto ):
+    texto =str (texto ).strip ()
+    if not PADRAO_MOEDA_BRL .fullmatch (texto ):
+        raise ValueError (f'Máscara monetária inválida: {texto}')
+    return texto
 
 
 def formatar_contabil (valor ):
     try :
-        numero =float (valor )
-    except (TypeError ,ValueError ):
-        numero =0.0 
-    return f"R$ {numero :,.2f}".replace (',','X').replace ('.',',').replace ('X','.')
+        if isinstance (valor ,str ):
+            numero =Decimal (str (extrair_valor (valor )))
+        else :
+            numero =Decimal (str (valor ))
+        if not numero .is_finite ():
+            numero =Decimal ('0')
+    except (InvalidOperation ,TypeError ,ValueError ):
+        numero =Decimal ('0')
+
+    numero =numero .quantize (Decimal ('0.01'),rounding =ROUND_HALF_UP )
+    sinal ='-'if numero <0 else ''
+    inteiro ,centavos =f"{abs (numero ):.2f}".split ('.')
+    grupos =[]
+    while inteiro :
+        grupos .append (inteiro [-3 :])
+        inteiro =inteiro [:-3 ]
+    parte_inteira ='.'.join (reversed (grupos ))or '0'
+    texto_final =f"R$ {sinal}{parte_inteira},{centavos}"
+    texto_final =forcar_virgula_nos_centavos (texto_final )
+    return validar_mascara_brl (texto_final )
 
 
 def extrair_valor (valor ):
@@ -100,17 +131,43 @@ def extrair_valor (valor ):
     if isinstance (valor ,(int ,float )):
         return float (valor )
 
-    texto =str (valor ).upper ().replace ('R$','').replace (' ','')
-    texto =re .sub ('[^0-9,.-]','',texto )
+    texto_original =str (valor ).upper ().replace ('R$','').replace (' ','').strip ()
+    negativo =texto_original .startswith ('-')or (
+        texto_original .startswith ('(')and texto_original .endswith (')')
+    )
+    texto =re .sub ('[^0-9,.]','',texto_original )
+
     if ','in texto and '.'in texto :
-        texto =texto .replace ('.','').replace (',','.')
+        if texto .rfind (',')>texto .rfind ('.'):
+            texto =texto .replace ('.','').replace (',','.')
+        else :
+            texto =texto .replace (',','')
+    elif texto .count ('.')>1 :
+        partes =texto .split ('.')
+        texto =''.join (partes [:-1 ])+'.'+partes [-1 ]if len (partes [-1 ])==2 else ''.join (partes )
+    elif texto .count ('.')==1 :
+        inteiro ,decimal =texto .split ('.')
+        texto =inteiro +decimal if len (decimal )==3 else inteiro +'.'+decimal
+    elif texto .count (',')>1 :
+        partes =texto .split (',')
+        texto =''.join (partes [:-1 ])+'.'+partes [-1 ]if len (partes [-1 ])==2 else ''.join (partes )
     elif ','in texto :
         texto =texto .replace (',','.')
 
     try :
-        return float (texto )
+        numero =float (texto )
+        return -abs (numero )if negativo else numero
     except (TypeError ,ValueError ):
         return 0.0 
+
+
+def normalizar_texto_exibicao (valor ):
+    if pd .isna (valor ):
+        return ''
+    texto =re .sub (r'\s+',' ',str (valor ).upper ().strip ())
+    texto =re .sub (r'\bLOCAC(?:AO|ÃO)\b','LOCAÇÃO',texto )
+    texto =re .sub (r'\bLOCAC(?:OES|ÕES)\b','LOCAÇÕES',texto )
+    return texto
 
 
 def converter_para_data (valor ):
@@ -331,6 +388,8 @@ def preparar_resumo (df_mes ):
     df ['ENTIDADE_LIMPA']=(
     df [col_entidade ].astype (str ).str .upper ().str .strip ().replace ('\\s+',' ',regex =True )
     )
+    df ['DESCRICAO_LIMPA']=df ['DESCRICAO_LIMPA'].map (normalizar_texto_exibicao )
+    df ['ENTIDADE_LIMPA']=df ['ENTIDADE_LIMPA'].map (normalizar_texto_exibicao )
 
     df =df [~df ['DESCRICAO_LIMPA'].isin (['','NAN','NONE'])]
     df ['ENTIDADE_LIMPA']=df ['ENTIDADE_LIMPA'].replace (['','NAN','NONE'],pd .NA )
@@ -383,14 +442,14 @@ def categorizar_pagamento (documento ):
 
 
 def entidade_para_grafico (linha ):
-    entidade =str (linha ['ENTIDADE']).strip ().upper ()
+    entidade =normalizar_texto_exibicao (linha ['ENTIDADE'])
     if (
     entidade in {'','NAN','NONE'}
     or 'JNL IMPORTADORA'in entidade 
     or '01.718.395'in entidade 
     or 'MINHA EMPRESA'in entidade 
     ):
-        return str (linha ['DESCRICAO']).strip ().upper ()
+        return normalizar_texto_exibicao (linha ['DESCRICAO'])
     return entidade 
 
 
@@ -457,7 +516,12 @@ if FPDF is not None :
 
         altura_texto =5 
         for _ ,linha in df .iterrows ():
-            valores =[linha [coluna ]for coluna in colunas ]
+            valores =[]
+            for coluna in colunas :
+                valor =linha [coluna ]
+                if 'VALOR'in remover_acentos (coluna )and str (valor ).strip ()not in {'','-'}:
+                    valor =forcar_virgula_nos_centavos (formatar_contabil (valor ))
+                valores .append (valor )
             total =any ('TOTAL'in str (valor ).upper ()for valor in valores )
             pdf .set_font ('Arial','B'if total else '',9 if total else 8 )
 
@@ -552,7 +616,7 @@ if FPDF is not None :
 
             trecho =df_plot .iloc [inicio :inicio +linhas_por_pagina ]
             altura_linha =min (8.0 ,max (minimo_altura_linha ,espaco_vertical /max (len (trecho ),1 )))
-            tamanho_fonte =min (8.0 ,max (4.0 ,altura_linha *0.82 ))
+            tamanho_fonte =8.0 if len (trecho )<=20 else min (8.0 ,max (4.0 ,altura_linha *0.82 ))
             largura_rotulo =76
             x_rotulo =10
             x_barra =89
@@ -581,7 +645,10 @@ if FPDF is not None :
 
                 pdf .set_font ('Arial','B',tamanho_fonte )
                 pdf .set_xy (x_barra +largura_barra +1 ,y )
-                pdf .cell (largura_valor ,altura_linha ,limpar_texto_pdf (formatar_contabil (valor )),border =0 ,align ='L')
+                rotulo_valor =formatar_contabil (valor )
+                rotulo_valor =forcar_virgula_nos_centavos (rotulo_valor )
+                rotulo_valor =validar_mascara_brl (rotulo_valor )
+                pdf .cell (largura_valor ,altura_linha ,limpar_texto_pdf (rotulo_valor ),border =0 ,align ='L')
                 y +=altura_linha
 
             pdf .set_text_color (0 ,0 ,0 )
