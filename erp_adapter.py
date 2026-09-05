@@ -134,7 +134,11 @@ def _serie_valor(df, coluna):
 def _serie_data(df, coluna):
     if coluna is None:
         return pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
-    return pd.to_datetime(df[coluna], errors="coerce", dayfirst=True).dt.normalize()
+    # ``format='mixed'`` evita que uma data ISO numa linha faça o pandas inferir
+    # um único formato e descarte outras datas válidas da mesma coluna.
+    return pd.to_datetime(
+        df[coluna], errors="coerce", dayfirst=True, format="mixed"
+    ).dt.normalize()
 
 
 def _nota_fiscal(linha, col_codigo, col_nfe, col_documento, col_descricao=None):
@@ -393,3 +397,14 @@ def prioridade_arquivo(nome):
     if "ATRASADOS" in normalizado or "NAO VENCIDAS" in normalizado:
         return 70
     return 50
+
+
+def tipo_legado_por_nome(nome):
+    """Reconhece os novos nomes oficiais quando o conteúdo ainda é legado."""
+    base = re.sub(r"\.[^.]+$", "", str(nome))
+    base = re.sub(r"\s*\(\d+\)\s*$", "", base)
+    normalizado = re.sub(r"[^A-Z0-9]+", " ", _sem_acentos(base)).strip()
+    return {
+        "RECEBIDOS": "notas_recebidas",
+        "CONTAS A PAGAR": "contas_a_pagar",
+    }.get(normalizado)
