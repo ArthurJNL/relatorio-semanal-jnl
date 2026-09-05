@@ -2,7 +2,7 @@ import unittest
 
 import pandas as pd
 
-from erp_adapter import adaptar_exportacao_novo_erp, prioridade_arquivo
+from erp_adapter import adaptar_exportacao_novo_erp, prioridade_arquivo, tipo_legado_por_nome
 
 
 class ErpAdapterTest(unittest.TestCase):
@@ -62,6 +62,24 @@ class ErpAdapterTest(unittest.TestCase):
             prioridade_arquivo("aguardando recebimento.xlsx"),
             prioridade_arquivo("NÃO VENCIDAS.xlsx"),
         )
+
+    def test_pagamentos_do_novo_contas_a_pagar_podem_vir_juntos(self):
+        bruto = pd.DataFrame(
+            [
+                ["Descrição", "Fornecedor", "Valor", "Valor pago", "Vencimento", "Data de pagamento", "Forma de pagamento"],
+                ["PAGO", "FORNECEDOR A", 100, 100, "2026-09-01", "2026-09-01", "PIX"],
+                ["EM ABERTO", "FORNECEDOR B", 200, 0, "2026-09-15", None, "Boleto"],
+            ]
+        )
+
+        resultado = adaptar_exportacao_novo_erp(bruto)
+
+        self.assertEqual(resultado["dados_por_tipo"]["fluxo_de_pagamento"]["VALOR"].sum(), 100)
+        self.assertEqual(resultado["dados_por_tipo"]["contas_a_pagar"]["VALOR"].sum(), 200)
+
+    def test_nomes_oficiais_reconhecem_temporariamente_a_estrutura_antiga(self):
+        self.assertEqual(tipo_legado_por_nome("CONTAS A PAGAR.xlsx"), "contas_a_pagar")
+        self.assertEqual(tipo_legado_por_nome("RECEBIDOS (2).xlsx"), "notas_recebidas")
 
 
 if __name__ == "__main__":
