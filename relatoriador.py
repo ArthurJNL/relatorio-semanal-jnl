@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from erp_adapter import adaptar_exportacao_novo_erp ,prioridade_arquivo
+from erp_adapter import adaptar_exportacao_novo_erp ,prioridade_arquivo ,tipo_legado_por_nome
 
 
 try :
@@ -765,9 +765,21 @@ MAPA_NOMES_AUTOMATICOS ={
     for chave ,especificacao in ESPECIFICACOES_RELATORIOS .items ()
 }
 
+# Nomes oficiais dos três arquivos do novo fluxo. Os aliases abaixo também
+# permitem que RECEBIDOS e CONTAS A PAGAR sejam usados enquanto ainda estiverem
+# na estrutura antiga. Quando a estrutura nova for detectada, o conteúdo tem
+# prioridade e CONTAS A PAGAR é separado automaticamente em pago e em aberto.
+MAPA_NOMES_AUTOMATICOS .update ({
+    normalizar_nome_entrada ('RECEBIDOS.xlsx'):'notas_recebidas',
+    normalizar_nome_entrada ('CONTAS A PAGAR.xlsx'):'contas_a_pagar',
+})
+
 
 def reconhecer_tipo_relatorio (nome_arquivo ):
-    return MAPA_NOMES_AUTOMATICOS .get (normalizar_nome_entrada (nome_arquivo ))
+    return (
+    MAPA_NOMES_AUTOMATICOS .get (normalizar_nome_entrada (nome_arquivo ))
+    or tipo_legado_por_nome (nome_arquivo )
+    )
 
 
 @st .cache_data (show_spinner =False )
@@ -1246,10 +1258,10 @@ with st .sidebar :
     )
 
     with st .expander ('Arquivos necessários do novo ERP'):
-        st .write ('1. aguardando recebimento — gera atrasados e a receber')
-        st .write ('2. recebidos — gera recebimentos realizados')
-        st .write ('3. pagamentos realizados — gera fluxo de pagamento')
-        st .write ('4. contas a pagar em aberto — gera valores a pagar')
+        st .write ('1. AGUARDANDO RECEBIMENTO.xlsx — gera atrasados e a receber')
+        st .write ('2. RECEBIDOS.xlsx — gera recebimentos realizados')
+        st .write ('3. CONTAS A PAGAR.xlsx — gera pagamentos realizados e valores em aberto')
+        st .caption ('CONTAS A PAGAR aceita temporariamente a estrutura antiga. Na estrutura nova, os lançamentos são separados automaticamente pela data e pelo valor pago.')
         st .caption ('ATRASADOS e NÃO VENCIDAS são dispensáveis quando o consolidado aguardando recebimento é enviado.')
 
     with st .expander ('Diagn\xf3stico das bibliotecas'):
