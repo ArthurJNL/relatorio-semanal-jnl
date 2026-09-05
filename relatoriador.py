@@ -8,8 +8,10 @@ import unicodedata
 from decimal import Decimal ,InvalidOperation ,ROUND_HALF_UP
 from pathlib import Path
 
-import pandas as pd 
-import streamlit as st 
+import pandas as pd
+import streamlit as st
+
+from erp_adapter import adaptar_exportacao_novo_erp ,prioridade_arquivo
 
 
 try :
@@ -174,10 +176,14 @@ def converter_para_data (valor ):
     return pd .to_datetime (valor ,errors ='coerce',dayfirst =True )
 
 
-def calcular_status_vencimento (data_alvo ):
+def calcular_status_vencimento (data_alvo ,data_referencia =None ):
     if pd .isna (data_alvo ):
         return '-'
-    hoje =pd .Timestamp .today ().normalize ()
+    hoje =(
+    pd .Timestamp (data_referencia ).normalize ()
+    if data_referencia is not None
+    else pd .Timestamp .today ().normalize ()
+    )
     data =pd .Timestamp (data_alvo ).normalize ()
     diferenca =(data -hoje ).days 
     if diferenca <0 :
@@ -767,6 +773,14 @@ def reconhecer_tipo_relatorio (nome_arquivo ):
 @st .cache_data (show_spinner =False )
 def preparar_arquivo_automatico (nome_arquivo ,conteudo ):
     bruto =ler_arquivo (nome_arquivo ,conteudo )
+    resultado_novo =adaptar_exportacao_novo_erp (bruto )
+    if resultado_novo .get ('reconhecido'):
+        return resultado_novo
+
+    chave =reconhecer_tipo_relatorio (nome_arquivo )
+    if chave is None :
+        raise ValueError ('Nome e estrutura de planilha não reconhecidos.')
+
     blocos_arquivo =processar_excel_hibrido (bruto )
     resumos_arquivo =[]
     for _ ,bloco in blocos_arquivo :
@@ -782,10 +796,16 @@ def preparar_arquivo_automatico (nome_arquivo ,conteudo ):
     dados =dados [dados ['VALOR']>0 ].copy ()
     if dados .empty :
         raise ValueError ('A planilha não possui datas e valores válidos para o relatório.')
-    return dados
+    return {
+        'reconhecido':True,
+        'tipo_fonte':'Modelo anterior',
+        'dados_por_tipo':{chave:dados },
+        'cancelados_qtd':0,
+        'cancelados_valor':0.0,
+    }
 
 
-def componentes_do_relatorio (dados ):
+def componentes_do_relatorio (dados ,data_referencia =None ):
     df =dados .copy ()
     df ['ENTIDADE_GRAFICO']=df .apply (entidade_para_grafico ,axis =1 )
 
@@ -826,7 +846,9 @@ def componentes_do_relatorio (dados ):
         .query ('VALOR > 0')
         .sort_values (['DATA','DESCRICAO'])
     )
-    detalhe ['STATUS']=detalhe ['DATA'].map (calcular_status_vencimento )
+    detalhe ['STATUS']=detalhe ['DATA'].map (
+        lambda data:calcular_status_vencimento (data ,data_referencia )
+    )
     detalhe ['DATA']=detalhe ['DATA'].dt .strftime ('%d/%m/%Y')
     return entidades ,pagamentos ,despesas ,detalhe
 
@@ -862,10 +884,10 @@ def tabela_automatica (detalhe ,especificacao ):
     return pd .DataFrame ({coluna :mapa [coluna ]for coluna in colunas }),colunas ,larguras
 
 
-def gerar_paginas_de_um_relatorio (chave_relatorio ,dados ):
+def gerar_paginas_de_um_relatorio (chave_relatorio ,dados ,data_referencia =None ):
     especificacao =ESPECIFICACOES_RELATORIOS [chave_relatorio ]
     titulo =especificacao ['titulo']
-    entidades ,pagamentos ,despesas ,detalhe =componentes_do_relatorio (dados )
+    entidades ,pagamentos ,despesas ,detalhe =componentes_do_relatorio (dados ,data_referencia )
     tabela ,colunas ,larguras =tabela_automatica (detalhe ,especificacao )
 
     pdf =PDFReport ()
@@ -888,13 +910,107 @@ def adicionar_pdf_ao_writer (writer ,origem ):
         writer .add_page (pagina )
 
 
-def gerar_relatorio_financeiro_automatico (ordem ,dados_por_tipo ):
+def gerar_resumo_executivo (ordem ,dados_por_tipo ,inicio ,fim ):
+    pdf =PDFReport ()
+    pdf .add_page ()
+    pdf .set_fill_color (17 ,17 ,17 )
+    pdf .rect (0 ,0 ,210 ,42 ,style ='F')
+    pdf .set_text_color (255 ,255 ,255 )
+    pdf .set_font ('Arial','B',20 )
+    pdf .set_xy (14 ,12 )
+    pdf .cell (182 ,10 ,'RELATORIO FINANCEIRO',border =0 ,ln =1 ,align ='L')
+    pdf .set_font ('Arial','',10 )
+    pdf .set_x (14 )
+    periodo =f"Periodo: {inicio.strftime ('%d/%m/%Y')} a {fim.strftime ('%d/%m/%Y')}"
+    pdf .cell (182 ,7 ,limpar_texto_pdf (periodo ),border =0 ,align ='L')
+
+    pdf .set_text_color (17 ,17 ,17 )
+    pdf .set_xy (14 ,52 )
+    pdf .set_font ('Arial','B',14 )
+    pdf .cell (182 ,8 ,'RESUMO EXECUTIVO',border =0 ,ln =1 )
+
+    configuracoes =[
+        ('notas_em_atraso','EM ATRASO',(178 ,44 ,44 )),
+        ('notas_a_receber','A RECEBER',(48 ,112 ,90 )),
+        ('notas_recebidas','RECEBIDO',(33 ,89 ,68 )),
+        ('fluxo_de_pagamento','PAGO',(73 ,80 ,87 )),
+        ('contas_a_pagar','A PAGAR',(169 ,102 ,21 )),
+    ]
+    disponiveis =[item for item in configuracoes if item [0 ]in ordem]
+    largura =86
+    altura =29
+    for indice ,(chave ,rotulo ,cor )in enumerate (disponiveis ):
+        coluna =indice %2
+        linha =indice //2
+        x =14 +coluna *94
+        y =67 +linha *36
+        dados =dados_por_tipo [chave ]
+        total =formatar_contabil (dados ['VALOR'].sum ())
+        pdf .set_fill_color (248 ,249 ,251 )
+        pdf .set_draw_color (*cor )
+        pdf .rect (x ,y ,largura ,altura ,style ='DF')
+        pdf .set_xy (x +4 ,y +4 )
+        pdf .set_text_color (*cor )
+        pdf .set_font ('Arial','B',9 )
+        pdf .cell (largura -8 ,5 ,rotulo ,border =0 ,ln =1 )
+        pdf .set_x (x +4 )
+        pdf .set_text_color (17 ,17 ,17 )
+        pdf .set_font ('Arial','B',13 )
+        pdf .cell (largura -8 ,8 ,limpar_texto_pdf (total ),border =0 ,ln =1 )
+        pdf .set_x (x +4 )
+        pdf .set_font ('Arial','',8 )
+        pdf .set_text_color (73 ,80 ,87 )
+        pdf .cell (largura -8 ,5 ,f"{len (dados )} lancamento(s)",border =0 )
+
+    y_saldos =67 +math .ceil (len (disponiveis )/2 )*36 +4
+    pdf .set_xy (14 ,y_saldos )
+    pdf .set_font ('Arial','B',12 )
+    pdf .set_text_color (17 ,17 ,17 )
+    pdf .cell (182 ,7 ,'INDICADORES',border =0 ,ln =1 )
+
+    indicadores =[]
+    if {'notas_recebidas','fluxo_de_pagamento'}.issubset (dados_por_tipo ):
+        recebidos =dados_por_tipo ['notas_recebidas']['VALOR'].sum ()
+        pagos =dados_por_tipo ['fluxo_de_pagamento']['VALOR'].sum ()
+        indicadores .append (('Saldo realizado (recebido - pago)',formatar_contabil (recebidos -pagos )))
+    else :
+        indicadores .append (('Saldo realizado','Indisponivel - falta RECEBIDO ou PAGO'))
+
+    if {'notas_a_receber','contas_a_pagar'}.issubset (dados_por_tipo ):
+        a_receber =dados_por_tipo ['notas_a_receber']['VALOR'].sum ()
+        a_pagar =dados_por_tipo ['contas_a_pagar']['VALOR'].sum ()
+        indicadores .append (('Saldo projetado (a receber - a pagar)',formatar_contabil (a_receber -a_pagar )))
+    else :
+        indicadores .append (('Saldo projetado','Indisponivel - falta A RECEBER ou A PAGAR'))
+
+    for rotulo ,valor_texto in indicadores :
+        pdf .set_x (14 )
+        pdf .set_font ('Arial','',10 )
+        pdf .cell (120 ,8 ,limpar_texto_pdf (rotulo ),border =0 )
+        pdf .set_font ('Arial','B',8 if 'Indisponivel'in valor_texto else 10 )
+        pdf .cell (62 ,8 ,limpar_texto_pdf (valor_texto ),border =0 ,ln =1 ,align ='R')
+
+    pdf .set_xy (14 ,min (258 ,y_saldos +42 ))
+    pdf .set_font ('Arial','',8 )
+    pdf .set_text_color (92 ,99 ,106 )
+    pdf .multi_cell (
+        182 ,5 ,
+        'O saldo projetado considera apenas os titulos a vencer do periodo selecionado. '
+        'Os valores vencidos aparecem separadamente em EM ATRASO.',
+        border =0 ,align ='L',
+    )
+    return finalizar_pdf (pdf )
+
+
+def gerar_relatorio_financeiro_automatico (ordem ,dados_por_tipo ,inicio ,fim ):
     if FPDF is None :
         raise RuntimeError ('fpdf2 não está instalado.')
     if PdfReader is None or PdfWriter is None :
         raise RuntimeError ('pypdf não está instalado.')
 
     writer =PdfWriter ()
+    resumo =gerar_resumo_executivo (ordem ,dados_por_tipo ,inicio ,fim )
+    adicionar_pdf_ao_writer (writer ,io .BytesIO (resumo ))
     for chave in ordem :
         especificacao =ESPECIFICACOES_RELATORIOS [chave ]
         caminho_capa =PASTA_CAPAS /especificacao ['capa']
@@ -902,7 +1018,7 @@ def gerar_relatorio_financeiro_automatico (ordem ,dados_por_tipo ):
             raise FileNotFoundError (f"Capa não encontrada: {caminho_capa.name}")
 
         adicionar_pdf_ao_writer (writer ,str (caminho_capa ))
-        paginas =gerar_paginas_de_um_relatorio (chave ,dados_por_tipo [chave ])
+        paginas =gerar_paginas_de_um_relatorio (chave ,dados_por_tipo [chave ],fim )
         adicionar_pdf_ao_writer (writer ,io .BytesIO (paginas ))
 
     saida =io .BytesIO ()
@@ -913,66 +1029,88 @@ def gerar_relatorio_financeiro_automatico (ordem ,dados_por_tipo ):
 def executar_modo_automatico (arquivos ):
     st .markdown ('# Relatório financeiro automático')
     st .caption (
-        'O nome de cada planilha define o relatório, os gráficos, a tabela e a capa. '
-        'Cada item abaixo será gerado como um bloco independente, exatamente como no PDF-modelo.'
+        'Aceita os arquivos do sistema anterior e os relatórios do novo ERP. '
+        'O conteúdo e os status definem automaticamente cada bloco do PDF.'
     )
 
-    arquivos_por_tipo ={}
+    dados_por_tipo ={}
+    fontes_por_tipo ={}
     linhas_diagnostico =[]
-    for arquivo in arquivos :
-        chave =reconhecer_tipo_relatorio (arquivo .name )
-        if chave is None :
+    erros =[]
+
+    arquivos_ordenados =sorted (
+        arquivos,
+        key =lambda arquivo:prioridade_arquivo (arquivo .name ),
+        reverse =True,
+    )
+    for arquivo in arquivos_ordenados :
+        try :
+            resultado =preparar_arquivo_automatico (arquivo .name ,arquivo .getvalue ())
+        except Exception as erro :
+            erros .append (f"{arquivo.name}: {erro}")
             linhas_diagnostico .append ({
                 'Arquivo':arquivo .name,
-                'Reconhecimento':'Não reconhecido',
-                'Capa':'-',
+                'Resultado':'Não reconhecido',
+                'Itens':0,
+                'Total':'-',
+                'Observação':str (erro ),
             })
             continue
-        especificacao =ESPECIFICACOES_RELATORIOS [chave ]
-        if chave in arquivos_por_tipo :
-            linhas_diagnostico .append ({
-                'Arquivo':arquivo .name,
-                'Reconhecimento':'Duplicado — ignorado',
-                'Capa':especificacao ['capa'],
-            })
-            continue
-        arquivos_por_tipo [chave ]=arquivo
+
+        adicionados =[]
+        ignorados =[]
+        quantidade =0
+        total =0.0
+        for chave ,dados in resultado ['dados_por_tipo'].items ():
+            titulo =ESPECIFICACOES_RELATORIOS [chave ]['titulo']
+            if chave in dados_por_tipo :
+                ignorados .append (titulo )
+                continue
+            dados_por_tipo [chave ]=dados
+            fontes_por_tipo [chave ]=arquivo .name
+            adicionados .append (titulo )
+            quantidade +=len (dados )
+            total +=float (dados ['VALOR'].sum ())
+
+        observacoes =[]
+        if ignorados :
+            observacoes .append ('Redundante e ignorado: '+', '.join (ignorados ))
+        cancelados_qtd =resultado .get ('cancelados_qtd',0 )
+        if cancelados_qtd :
+            observacoes .append (
+                f"{cancelados_qtd} nota(s) cancelada(s) excluída(s), "
+                f"total {formatar_contabil (resultado.get ('cancelados_valor',0 ))}"
+            )
         linhas_diagnostico .append ({
             'Arquivo':arquivo .name,
-            'Reconhecimento':especificacao ['titulo'],
-            'Capa':especificacao ['capa'],
+            'Resultado':', '.join (adicionados )if adicionados else 'Arquivo redundante',
+            'Itens':quantidade,
+            'Total':formatar_contabil (total )if adicionados else '-',
+            'Observação':'; '.join (observacoes )or resultado .get ('tipo_fonte','Reconhecido'),
         })
 
     st .dataframe (pd .DataFrame (linhas_diagnostico ),use_container_width =True ,hide_index =True )
-    if not arquivos_por_tipo :
-        st .error ('Nenhuma planilha foi reconhecida. Confira os nomes exibidos na lista de arquivos esperados.')
-        with st .expander ('Nomes de planilha aceitos'):
-            for chave in ORDEM_PADRAO_AUTOMATICA :
-                st .write (f"• {ESPECIFICACOES_RELATORIOS[chave]['nome_arquivo']}.xlsx")
-        return
-
-    faltantes =[
-        ESPECIFICACOES_RELATORIOS [chave ]['nome_arquivo']+'.xlsx'
-        for chave in ORDEM_PADRAO_AUTOMATICA
-        if chave not in arquivos_por_tipo
-    ]
-    if faltantes :
-        st .warning ('O PDF será gerado com os arquivos reconhecidos. Faltaram: '+', '.join (faltantes ))
-    else :
-        st .success ('As cinco planilhas do relatório completo foram reconhecidas.')
-
-    dados_por_tipo ={}
-    erros =[]
-    for chave ,arquivo in arquivos_por_tipo .items ():
-        try :
-            dados_por_tipo [chave ]=preparar_arquivo_automatico (arquivo .name ,arquivo .getvalue ())
-        except Exception as erro :
-            erros .append (f"{arquivo.name}: {erro}")
-    if erros :
-        for erro in erros :
-            st .error (erro )
+    for erro in erros :
+        st .error (erro )
     if not dados_por_tipo :
+        st .error ('Nenhuma planilha compatível foi reconhecida.')
         return
+
+    faltantes =[chave for chave in ORDEM_PADRAO_AUTOMATICA if chave not in dados_por_tipo]
+    if 'contas_a_pagar'in faltantes :
+        st .warning (
+            'Falta a exportação das contas a pagar ainda em aberto. O arquivo recebido contém '
+            'somente pagamentos realizados, por isso gera FLUXO DE PAGAMENTO, mas não A PAGAR.'
+        )
+    outros_faltantes =[
+        ESPECIFICACOES_RELATORIOS [chave ]['titulo']
+        for chave in faltantes
+        if chave !='contas_a_pagar'
+    ]
+    if outros_faltantes :
+        st .warning ('Blocos sem dados: '+', '.join (outros_faltantes ))
+    if not faltantes :
+        st .success ('Todos os cinco blocos financeiros foram reconhecidos.')
 
     data_minima =min (df ['DATA'].min ()for df in dados_por_tipo .values ()).date ()
     data_maxima =max (df ['DATA'].max ()for df in dados_por_tipo .values ()).date ()
@@ -995,7 +1133,11 @@ def executar_modo_automatico (arquivos ):
 
     dados_filtrados ={}
     for chave ,df in dados_por_tipo .items ():
-        filtro =(df ['DATA']>=pd .Timestamp (inicio ))&(df ['DATA']<=pd .Timestamp (fim ))
+        if chave =='notas_em_atraso':
+            # Inadimplência é uma posição acumulada na data final, não apenas o movimento da semana.
+            filtro =df ['DATA']<=pd .Timestamp (fim )
+        else :
+            filtro =(df ['DATA']>=pd .Timestamp (inicio ))&(df ['DATA']<=pd .Timestamp (fim ))
         recorte =df .loc [filtro ].copy ()
         if not recorte .empty :
             dados_filtrados [chave ]=recorte
@@ -1073,6 +1215,8 @@ def executar_modo_automatico (arquivos ):
             st .session_state ['pdf_automatico_pronto']=gerar_relatorio_financeiro_automatico (
                 ordem,
                 dados_filtrados,
+                inicio,
+                fim,
             )
             st .session_state ['assinatura_pdf_automatico']=assinatura
 
@@ -1093,13 +1237,20 @@ with st .sidebar :
     modo =st .radio (
     'Modo de geração',
     ['Relatório completo automático','Individual / personalizado'],
-    help ='O modo automático reconhece os cinco nomes padronizados e inclui as capas. O modo individual mantém a personalização anterior.',
+    help ='O modo automático reconhece os arquivos antigos e os relatórios do novo ERP, separando os blocos pelo conteúdo e pelos status.',
     )
     arquivos =st .file_uploader (
     'Suba uma ou mais planilhas',
     type =['xlsx','xls','csv'],
     accept_multiple_files =True ,
     )
+
+    with st .expander ('Arquivos necessários do novo ERP'):
+        st .write ('1. aguardando recebimento — gera atrasados e a receber')
+        st .write ('2. recebidos — gera recebimentos realizados')
+        st .write ('3. pagamentos realizados — gera fluxo de pagamento')
+        st .write ('4. contas a pagar em aberto — gera valores a pagar')
+        st .caption ('ATRASADOS e NÃO VENCIDAS são dispensáveis quando o consolidado aguardando recebimento é enviado.')
 
     with st .expander ('Diagn\xf3stico das bibliotecas'):
         st .write ('Gráficos na tela: OK (Streamlit nativo)')
